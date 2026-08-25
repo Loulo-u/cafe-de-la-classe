@@ -31,21 +31,18 @@
 
 <div id="root"></div>
 
-<!-- React + Babel (aucune étape de build nécessaire) -->
+<!-- React + Babel -->
 <script crossorigin src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
 <script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
 <script src="https://unpkg.com/@babel/standalone@7.26.4/babel.min.js"></script>
 
-<!-- Firebase (base de données partagée en temps réel) -->
+<!-- Firebase -->
 <script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-app-compat.js"></script>
 <script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-database-compat.js"></script>
 
 <script>
 /* =========================================================
-   1) CONFIGURATION FIREBASE — À REMPLACER
-   Copiez ici la config de VOTRE projet Firebase
-   (Console Firebase > Paramètres du projet > Vos applications > Config SDK)
-   Voir le README.md fourni pour les instructions détaillées.
+   1) CONFIGURATION FIREBASE
 ========================================================= */
 const firebaseConfig = {
   apiKey: "AIzaSyBz7q0lAFVFuo_j1-Hg0xTkC16fta2qC7g",
@@ -101,7 +98,7 @@ const DEFAULT_CONFIG = {
 const uid = () => Math.random().toString(36).slice(2, 10);
 
 function fmtMoney(v, currency) {
-  return `${v.toFixed(2)} ${currency}`;
+  return `${(v || 0).toFixed(2)} ${currency}`;
 }
 function fmtDate(ts) {
   const d = new Date(ts);
@@ -119,9 +116,6 @@ function isoDaysAgo(n) {
 
 /* ---------------------------------------------------------
    Stockage partagé — Firebase Realtime Database
-   (remplace window.storage de Claude.ai ; même comportement :
-   tous les appareils qui ouvrent le site voient les mêmes données
-   et les changements se synchronisent en direct)
 --------------------------------------------------------- */
 function useShared(key, fallback) {
   const [value, setValue] = useState(fallback);
@@ -132,9 +126,12 @@ function useShared(key, fallback) {
     const listener = ref.on("value", (snap) => {
       const val = snap.val();
       if (val !== null && val !== undefined) {
-        setValue(val);
+        if (typeof fallback === "object" && !Array.isArray(fallback) && val !== null) {
+          setValue({ ...fallback, ...val });
+        } else {
+          setValue(val);
+        }
       } else {
-        // Rien en base encore : on initialise avec la valeur par défaut
         ref.set(fallback).catch((e) => console.error("Erreur d'initialisation", key, e));
       }
       setReady(true);
@@ -143,7 +140,6 @@ function useShared(key, fallback) {
       setReady(true);
     });
     return () => ref.off("value", listener);
-    // eslint-disable-next-line
   }, [key]);
 
   const persist = useCallback((updater) => {
@@ -158,7 +154,7 @@ function useShared(key, fallback) {
 }
 
 /* ---------------------------------------------------------
-   Icônes SVG (mêmes formes que lucide-react, sans dépendance)
+   Icônes SVG
 --------------------------------------------------------- */
 function Icon({ children, size = 16, color = "currentColor", strokeWidth = 2 }) {
   return (
@@ -183,7 +179,7 @@ const PenLineIcon = (p) => <Icon {...p}><path d="M12 20h9" /><path d="M16.5 3.5a
 const RotateCcwIcon = (p) => <Icon {...p}><path d="M3 12a9 9 0 1 0 3-6.7L3 8" /><path d="M3 3v5h5" /></Icon>;
 
 /* ---------------------------------------------------------
-   Composants UI de base
+   Composants UI
 --------------------------------------------------------- */
 function Btn({ children, onClick, variant = "solid", full, disabled, style, ...rest }) {
   const base = {
@@ -243,22 +239,25 @@ function Toast({ text }) {
 }
 
 /* ---------------------------------------------------------
-   Application
+   Application Principale
 --------------------------------------------------------- */
 function App() {
   const [config, setConfig, configReady] = useShared(CONFIG_KEY, DEFAULT_CONFIG);
   const [log, setLog, logReady] = useShared(LOG_KEY, []);
 
-  const [screen, setScreen] = useState("select"); // select | tap | history | pin | admin
+  const [screen, setScreen] = useState("select");
   const [memberId, setMemberId] = useState(null);
   const [toast, setToast] = useState("");
   const [pin, setPin] = useState("");
   const [pinError, setPinError] = useState(false);
-  const [adminTab, setAdminTab] = useState("log"); // log | members | products | settings
+  const [adminTab, setAdminTab] = useState("log");
   const [cart, setCart] = useState({});
 
   const ready = configReady && logReady;
-  const currency = config.currency || "CHF";
+  const currency = config?.currency || "CHF";
+  const members = useMemo(() => config?.members || [], [config?.members]);
+  const products = useMemo(() => config?.products || [], [config?.products]);
+  const logEntries = useMemo(() => Array.isArray(log) ? log : [], [log]);
 
   useEffect(() => {
     if (!toast) return;
@@ -267,18 +266,18 @@ function App() {
   }, [toast]);
 
   const member = useMemo(
-    () => config.members.find((m) => m.id === memberId) || null,
-    [config.members, memberId]
+    () => members.find((m) => m.id === memberId) || null,
+    [members, memberId]
   );
 
   const myLog = useMemo(
-    () => log.filter((e) => e.memberId === memberId).sort((a, b) => b.ts - a.ts),
-    [log, memberId]
+    () => logEntries.filter((e) => e.memberId === memberId).sort((a, b) => b.ts - a.ts),
+    [logEntries, memberId]
   );
 
   const productMap = useMemo(
-    () => Object.fromEntries(config.products.map((p) => [p.id, p])),
-    [config.products]
+    () => Object.fromEntries(products.map((p) => [p.id, p])),
+    [products]
   );
 
   const cartLines = useMemo(
@@ -311,7 +310,7 @@ function App() {
   function clearCart() { setCart({}); }
 
   function validateCart() {
-    if (cartLines.length === 0) return;
+    if (cartLines.length === 0 || !member) return;
     const now = Date.now();
     const entries = [];
     cartLines.forEach(({ product, qty }) => {
@@ -327,7 +326,7 @@ function App() {
         });
       }
     });
-    setLog((prev) => [...entries, ...prev]);
+    setLog((prev) => [...entries, ...(Array.isArray(prev) ? prev : [])]);
     setToast(`${cartCount} article${cartCount > 1 ? "s" : ""} enregistré${cartCount > 1 ? "s" : ""} pour ${member.name}`);
     clearCart();
   }
@@ -345,7 +344,7 @@ function App() {
       <div className="flex flex-col gap-5 p-5">
         <Header subtitle="Qui prend un café ?" />
         <div className="grid grid-cols-2 gap-3">
-          {config.members.map((m) => (
+          {members.map((m) => (
             <button
               key={m.id}
               onClick={() => { setMemberId(m.id); clearCart(); setScreen("tap"); }}
@@ -358,8 +357,8 @@ function App() {
               {m.name}
             </button>
           ))}
-          {config.members.length === 0 && (
-            <div style={{ color: C.chalkDim, fontSize: 13 }}>
+          {members.length === 0 && (
+            <div style={{ color: C.chalkDim, fontSize: 13, gridColumn: "span 2" }}>
               Aucun membre. Ajoutez-en depuis l'administration.
             </div>
           )}
@@ -398,7 +397,7 @@ function App() {
             Touchez un produit pour l'ajouter à votre sélection
           </div>
           <div className="grid grid-cols-2 gap-3">
-            {config.products.map((p) => {
+            {products.map((p) => {
               const qty = cart[p.id] || 0;
               return (
                 <button
@@ -426,8 +425,8 @@ function App() {
                 </button>
               );
             })}
-            {config.products.length === 0 && (
-              <div style={{ color: C.chalkDim, fontSize: 13 }}>
+            {products.length === 0 && (
+              <div style={{ color: C.chalkDim, fontSize: 13, gridColumn: "span 2" }}>
                 Aucun produit. Ajoutez-en depuis l'administration.
               </div>
             )}
@@ -472,7 +471,7 @@ function App() {
   }
 
   function ScreenHistory() {
-    const total = myLog.reduce((s, e) => s + e.price, 0);
+    const total = myLog.reduce((s, e) => s + (e.price || 0), 0);
     return (
       <div className="flex flex-col gap-5 p-5">
         <button
@@ -536,7 +535,7 @@ function App() {
           />
           {pinError && <div style={{ color: C.red, fontSize: 12 }}>Code incorrect</div>}
           <Btn onClick={() => {
-            if (pin === config.adminPin) { setScreen("admin"); setPin(""); }
+            if (pin === (config?.adminPin || DEFAULT_CONFIG.adminPin)) { setScreen("admin"); setPin(""); }
             else setPinError(true);
           }}>
             Déverrouiller
@@ -599,28 +598,28 @@ function App() {
     const filtered = useMemo(() => {
       const fromTs = new Date(from + "T00:00:00").getTime();
       const toTs = new Date(to + "T23:59:59").getTime();
-      return log.filter((e) => {
+      return logEntries.filter((e) => {
         if (e.ts < fromTs || e.ts > toTs) return false;
         if (filterMember !== "all" && e.memberId !== filterMember) return false;
         return true;
       }).sort((a, b) => b.ts - a.ts);
-    }, [log, from, to, filterMember]);
+    }, [logEntries, from, to, filterMember]);
 
     const summary = useMemo(() => {
       const byMember = {};
       for (const e of filtered) {
         if (!byMember[e.memberId]) byMember[e.memberId] = { name: e.memberName, count: 0, total: 0 };
         byMember[e.memberId].count += 1;
-        byMember[e.memberId].total += e.price;
+        byMember[e.memberId].total += (e.price || 0);
       }
       return Object.values(byMember).sort((a, b) => b.total - a.total);
     }, [filtered]);
 
-    const grandTotal = filtered.reduce((s, e) => s + e.price, 0);
+    const grandTotal = filtered.reduce((s, e) => s + (e.price || 0), 0);
 
     function exportCSV() {
       const rows = [["Date", "Membre", "Produit", "Prix", "Devise"]];
-      filtered.forEach((e) => rows.push([fmtDate(e.ts), e.memberName, e.productName, e.price.toFixed(2), currency]));
+      filtered.forEach((e) => rows.push([fmtDate(e.ts), e.memberName, e.productName, (e.price || 0).toFixed(2), currency]));
       rows.push([]);
       rows.push(["Récapitulatif par personne"]);
       rows.push(["Membre", "Nombre", "Total"]);
@@ -647,7 +646,7 @@ function App() {
               style={{ background: C.surface2, border: `1px solid ${C.border}`, borderRadius: 8, padding: "8px 10px", color: C.chalk, fontSize: 14 }}
             >
               <option value="all">Tous</option>
-              {config.members.map((m) => <option key={m.id} value={m.id}>{m.name}</option>)}
+              {members.map((m) => <option key={m.id} value={m.id}>{m.name}</option>)}
             </select>
           </label>
           <Btn onClick={exportCSV} style={{ marginLeft: "auto" }}>
@@ -704,21 +703,21 @@ function App() {
           <Field label="" placeholder="Nom du membre" value={name} onChange={(e) => setName(e.target.value)} />
           <Btn onClick={() => {
             if (!name.trim()) return;
-            setConfig((c) => ({ ...c, members: [...c.members, { id: uid(), name: name.trim() }] }));
+            setConfig((c) => ({ ...c, members: [...(c?.members || []), { id: uid(), name: name.trim() }] }));
             setName("");
           }}><PlusIcon size={14} /> Ajouter</Btn>
         </div>
         <div className="flex flex-col gap-2">
-          {config.members.map((m) => (
+          {members.map((m) => (
             <div key={m.id} style={{ background: C.surface2, border: `1px solid ${C.border}`, borderRadius: 8, padding: "8px 12px" }} className="flex justify-between items-center">
               <span style={{ color: C.chalk, fontSize: 14 }}>{m.name}</span>
-              <button onClick={() => setConfig((c) => ({ ...c, members: c.members.filter((x) => x.id !== m.id) }))}
+              <button onClick={() => setConfig((c) => ({ ...c, members: (c?.members || []).filter((x) => x.id !== m.id) }))}
                 style={{ background: "none", border: "none", cursor: "pointer" }}>
                 <TrashIcon size={15} color={C.red} />
               </button>
             </div>
           ))}
-          {config.members.length === 0 && <Empty text="Aucun membre pour le moment." />}
+          {members.length === 0 && <Empty text="Aucun membre pour le moment." />}
         </div>
         <div style={{ color: C.chalkDim, fontSize: 11.5 }}>
           Supprimer un membre ne supprime pas son historique de consommation déjà enregistré.
@@ -740,12 +739,12 @@ function App() {
           <Btn onClick={() => {
             const p = parseFloat(price);
             if (!name.trim() || isNaN(p)) return;
-            setConfig((c) => ({ ...c, products: [...c.products, { id: uid(), name: name.trim(), price: p, emoji: emoji || "☕" }] }));
+            setConfig((c) => ({ ...c, products: [...(c?.products || []), { id: uid(), name: name.trim(), price: p, emoji: emoji || "☕" }] }));
             setName(""); setPrice("");
           }}><PlusIcon size={14} /> Ajouter</Btn>
         </div>
         <div className="flex flex-col gap-2">
-          {config.products.map((p) => (
+          {products.map((p) => (
             <div key={p.id} style={{ background: C.surface2, border: `1px solid ${C.border}`, borderRadius: 8, padding: "8px 12px" }} className="flex justify-between items-center gap-2">
               <span style={{ fontSize: 18 }}>{p.emoji}</span>
               <span style={{ color: C.chalk, fontSize: 14, flex: 1 }}>{p.name}</span>
@@ -753,17 +752,17 @@ function App() {
                 type="number" step="0.05" defaultValue={p.price}
                 onBlur={(e) => {
                   const val = parseFloat(e.target.value);
-                  if (!isNaN(val)) setConfig((c) => ({ ...c, products: c.products.map((x) => x.id === p.id ? { ...x, price: val } : x) }));
+                  if (!isNaN(val)) setConfig((c) => ({ ...c, products: (c?.products || []).map((x) => x.id === p.id ? { ...x, price: val } : x) }));
                 }}
                 style={{ width: 70, background: C.surface, border: `1px solid ${C.border}`, borderRadius: 6, padding: "5px 7px", color: C.amber, fontSize: 13 }}
               />
-              <button onClick={() => setConfig((c) => ({ ...c, products: c.products.filter((x) => x.id !== p.id) }))}
+              <button onClick={() => setConfig((c) => ({ ...c, products: (c?.products || []).filter((x) => x.id !== p.id) }))}
                 style={{ background: "none", border: "none", cursor: "pointer" }}>
                 <TrashIcon size={15} color={C.red} />
               </button>
             </div>
           ))}
-          {config.products.length === 0 && <Empty text="Aucun produit pour le moment." />}
+          {products.length === 0 && <Empty text="Aucun produit pour le moment." />}
         </div>
         <div style={{ color: C.chalkDim, fontSize: 11.5 }}>
           Modifier le prix ne change que les futures consommations : l'historique garde le prix payé au moment de chaque conso.
@@ -773,7 +772,7 @@ function App() {
   }
 
   function AdminSettings() {
-    const [newPin, setNewPin] = useState(config.adminPin);
+    const [newPin, setNewPin] = useState(config?.adminPin || "1234");
     const [confirmReset, setConfirmReset] = useState(false);
     return (
       <div className="flex flex-col gap-6">
