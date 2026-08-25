@@ -62,7 +62,7 @@ const db = firebase.database();
 </script>
 
 <script type="text/babel" data-presets="react">
-const { useState, useEffect, useCallback, useMemo } = React;
+const { useState, useEffect, useCallback, useMemo } = window.React;
 
 /* ---------------------------------------------------------
    Palette "tableau noir de la salle de pause"
@@ -855,6 +855,7 @@ function App() {
   );
 }
 
+const container = document.getElementById("root");
 const root = ReactDOM.createRoot(document.getElementById("root"));
 root.render(<App />);
 </script>
