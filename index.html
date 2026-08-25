@@ -1,0 +1,862 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1, user-scalable=no" />
+<title>Café de la classe</title>
+<meta name="theme-color" content="#1C1917" />
+<style>
+  html, body { margin: 0; padding: 0; background: #1C1917; }
+  * { box-sizing: border-box; }
+  ::-webkit-scrollbar { width: 8px; }
+  ::-webkit-scrollbar-thumb { background: #443B31; border-radius: 8px; }
+  input, select, button { font-family: inherit; }
+  .flex { display: flex; }
+  .flex-col { flex-direction: column; }
+  .items-center { align-items: center; }
+  .items-start { align-items: flex-start; }
+  .items-end { align-items: flex-end; }
+  .justify-between { justify-content: space-between; }
+  .justify-center { justify-content: center; }
+  .flex-wrap { flex-wrap: wrap; }
+  .gap-1 { gap: 4px; } .gap-2 { gap: 8px; } .gap-3 { gap: 12px; }
+  .gap-4 { gap: 16px; } .gap-5 { gap: 20px; } .gap-6 { gap: 24px; }
+  .p-5 { padding: 20px; }
+  .grid { display: grid; }
+  .grid-cols-2 { grid-template-columns: 1fr 1fr; }
+  .fixed { position: fixed; }
+</style>
+</head>
+<body>
+
+<div id="root"></div>
+
+<!-- React + Babel (aucune étape de build nécessaire) -->
+<script crossorigin src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
+<script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
+<script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+
+<!-- Firebase (base de données partagée en temps réel) -->
+<script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-app-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-database-compat.js"></script>
+
+<script>
+/* =========================================================
+   1) CONFIGURATION FIREBASE — À REMPLACER
+   Copiez ici la config de VOTRE projet Firebase
+   (Console Firebase > Paramètres du projet > Vos applications > Config SDK)
+   Voir le README.md fourni pour les instructions détaillées.
+========================================================= */
+const firebaseConfig = {
+  apiKey: "AIzaSyBz7q0lAFVFuo_j1-Hg0xTkC16fta2qC7g",
+  authDomain: "cafe-app-ad754.firebaseapp.com",
+  databaseURL: "https://cafe-app-ad754-default-rtdb.europe-west1.firebasedatabase.app",
+  projectId: "cafe-app-ad754",
+  storageBucket: "cafe-app-ad754.firebasestorage.app",
+  messagingSenderId: "571191647089",
+  appId: "1:571191647089:web:d78816a7c987b2f82134d0"
+};
+
+firebase.initializeApp(firebaseConfig);
+const db = firebase.database();
+</script>
+
+<script type="text/babel" data-presets="react">
+const { useState, useEffect, useCallback, useMemo } = React;
+
+/* ---------------------------------------------------------
+   Palette "tableau noir de la salle de pause"
+--------------------------------------------------------- */
+const C = {
+  bg: "#1C1917",
+  surface: "#242019",
+  surface2: "#2E2822",
+  raised: "#372F27",
+  chalk: "#F1EBDD",
+  chalkDim: "#B7AC98",
+  amber: "#C99457",
+  amberDim: "#8C6A40",
+  green: "#8FAE82",
+  red: "#BD6D5C",
+  border: "#443B31",
+};
+
+const CONFIG_KEY = "cafe-config-v1";
+const LOG_KEY = "cafe-consumptions-v1";
+
+const DEFAULT_CONFIG = {
+  members: [
+    { id: "m1", name: "Alex" },
+    { id: "m2", name: "Sam" },
+  ],
+  products: [
+    { id: "p1", name: "Café", price: 0.3, emoji: "☕" },
+    { id: "p2", name: "Thé", price: 0.3, emoji: "🍵" },
+    { id: "p3", name: "Chocolat chaud", price: 0.4, emoji: "🍫" },
+  ],
+  adminPin: "1234",
+  currency: "CHF",
+};
+
+const uid = () => Math.random().toString(36).slice(2, 10);
+
+function fmtMoney(v, currency) {
+  return `${v.toFixed(2)} ${currency}`;
+}
+function fmtDate(ts) {
+  const d = new Date(ts);
+  return d.toLocaleDateString("fr-CH", { day: "2-digit", month: "2-digit", year: "numeric" }) +
+    " " + d.toLocaleTimeString("fr-CH", { hour: "2-digit", minute: "2-digit" });
+}
+function todayISO() {
+  return new Date().toISOString().slice(0, 10);
+}
+function isoDaysAgo(n) {
+  const d = new Date();
+  d.setDate(d.getDate() - n);
+  return d.toISOString().slice(0, 10);
+}
+
+/* ---------------------------------------------------------
+   Stockage partagé — Firebase Realtime Database
+   (remplace window.storage de Claude.ai ; même comportement :
+   tous les appareils qui ouvrent le site voient les mêmes données
+   et les changements se synchronisent en direct)
+--------------------------------------------------------- */
+function useShared(key, fallback) {
+  const [value, setValue] = useState(fallback);
+  const [ready, setReady] = useState(false);
+
+  useEffect(() => {
+    const ref = db.ref(key);
+    const listener = ref.on("value", (snap) => {
+      const val = snap.val();
+      if (val !== null && val !== undefined) {
+        setValue(val);
+      } else {
+        // Rien en base encore : on initialise avec la valeur par défaut
+        ref.set(fallback).catch((e) => console.error("Erreur d'initialisation", key, e));
+      }
+      setReady(true);
+    }, (err) => {
+      console.error("Erreur de lecture Firebase", key, err);
+      setReady(true);
+    });
+    return () => ref.off("value", listener);
+    // eslint-disable-next-line
+  }, [key]);
+
+  const persist = useCallback((updater) => {
+    setValue((prev) => {
+      const next = typeof updater === "function" ? updater(prev) : updater;
+      db.ref(key).set(next).catch((e) => console.error("Erreur de sauvegarde", key, e));
+      return next;
+    });
+  }, [key]);
+
+  return [value, persist, ready];
+}
+
+/* ---------------------------------------------------------
+   Icônes SVG (mêmes formes que lucide-react, sans dépendance)
+--------------------------------------------------------- */
+function Icon({ children, size = 16, color = "currentColor", strokeWidth = 2 }) {
+  return (
+    <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke={color}
+      strokeWidth={strokeWidth} strokeLinecap="round" strokeLinejoin="round">
+      {children}
+    </svg>
+  );
+}
+const CoffeeIcon = (p) => <Icon {...p}><path d="M17 8h1a4 4 0 1 1 0 8h-1" /><path d="M3 8h14v9a4 4 0 0 1-4 4H7a4 4 0 0 1-4-4Z" /><line x1="6" y1="2" x2="6" y2="4" /><line x1="10" y1="2" x2="10" y2="4" /><line x1="14" y1="2" x2="14" y2="4" /></Icon>;
+const PlusIcon = (p) => <Icon {...p}><line x1="12" y1="5" x2="12" y2="19" /><line x1="5" y1="12" x2="19" y2="12" /></Icon>;
+const TrashIcon = (p) => <Icon {...p}><path d="M3 6h18" /><path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6" /><path d="M10 11v6" /><path d="M14 11v6" /><path d="M9 6V4a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1v2" /></Icon>;
+const LockIcon = (p) => <Icon {...p}><rect x="3" y="11" width="18" height="11" rx="2" /><path d="M7 11V7a5 5 0 0 1 10 0v4" /></Icon>;
+const ArrowLeftIcon = (p) => <Icon {...p}><line x1="19" y1="12" x2="5" y2="12" /><polyline points="12 19 5 12 12 5" /></Icon>;
+const DownloadIcon = (p) => <Icon {...p}><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" /><polyline points="7 10 12 15 17 10" /><line x1="12" y1="15" x2="12" y2="3" /></Icon>;
+const CheckIcon = (p) => <Icon {...p}><polyline points="20 6 9 17 4 12" /></Icon>;
+const SettingsIcon = (p) => <Icon {...p}><circle cx="12" cy="12" r="3" /><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z" /></Icon>;
+const UsersIcon = (p) => <Icon {...p}><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2" /><circle cx="9" cy="7" r="4" /><path d="M23 21v-2a4 4 0 0 0-3-3.87" /><path d="M16 3.13a4 4 0 0 1 0 7.75" /></Icon>;
+const PackageIcon = (p) => <Icon {...p}><path d="M16.5 9.4 7.5 4.21" /><path d="M21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16Z" /><path d="M3.27 6.96 12 12.01l8.73-5.05" /><line x1="12" y1="22.08" x2="12" y2="12" /></Icon>;
+const ListOrderedIcon = (p) => <Icon {...p}><line x1="10" y1="6" x2="21" y2="6" /><line x1="10" y1="12" x2="21" y2="12" /><line x1="10" y1="18" x2="21" y2="18" /><path d="M4 6h1v4" /><path d="M4 10h2" /><path d="M6 18H4c0-1 2-2 2-3s-1-1.5-2-1" /></Icon>;
+const PenLineIcon = (p) => <Icon {...p}><path d="M12 20h9" /><path d="M16.5 3.5a2.12 2.12 0 0 1 3 3L7 19l-4 1 1-4Z" /></Icon>;
+const RotateCcwIcon = (p) => <Icon {...p}><path d="M3 12a9 9 0 1 0 3-6.7L3 8" /><path d="M3 3v5h5" /></Icon>;
+
+/* ---------------------------------------------------------
+   Composants UI de base
+--------------------------------------------------------- */
+function Btn({ children, onClick, variant = "solid", full, disabled, style, ...rest }) {
+  const base = {
+    display: "inline-flex", alignItems: "center", justifyContent: "center", gap: 8,
+    borderRadius: 10, padding: "10px 16px", fontSize: 14, fontWeight: 600,
+    border: `1px solid ${C.border}`, cursor: disabled ? "not-allowed" : "pointer",
+    opacity: disabled ? 0.5 : 1, width: full ? "100%" : "auto",
+    transition: "transform .12s ease, background .15s ease",
+    background: variant === "solid" ? C.amber : variant === "danger" ? "transparent" : C.surface2,
+    color: variant === "solid" ? "#1C1712" : variant === "danger" ? C.red : C.chalk,
+    borderColor: variant === "danger" ? C.red : C.border,
+  };
+  return (
+    <button
+      onClick={onClick}
+      disabled={disabled}
+      style={{ ...base, ...style }}
+      onMouseDown={(e) => (e.currentTarget.style.transform = "scale(0.97)")}
+      onMouseUp={(e) => (e.currentTarget.style.transform = "scale(1)")}
+      onMouseLeave={(e) => (e.currentTarget.style.transform = "scale(1)")}
+      {...rest}
+    >
+      {children}
+    </button>
+  );
+}
+
+function Field({ label, ...props }) {
+  return (
+    <label className="flex flex-col gap-1" style={{ fontSize: 13, color: C.chalkDim }}>
+      {label}
+      <input
+        {...props}
+        style={{
+          background: C.surface2, border: `1px solid ${C.border}`, borderRadius: 8,
+          padding: "8px 10px", color: C.chalk, fontSize: 14, outline: "none",
+        }}
+      />
+    </label>
+  );
+}
+
+function Toast({ text }) {
+  if (!text) return null;
+  return (
+    <div
+      className="fixed flex items-center gap-2"
+      style={{
+        left: "50%", bottom: 24, transform: "translateX(-50%)", background: C.green, color: "#152012",
+        padding: "10px 18px", borderRadius: 999, fontWeight: 700, fontSize: 14,
+        boxShadow: "0 8px 24px rgba(0,0,0,.4)", zIndex: 50,
+      }}
+    >
+      <CheckIcon size={16} strokeWidth={3} /> {text}
+    </div>
+  );
+}
+
+/* ---------------------------------------------------------
+   Application
+--------------------------------------------------------- */
+function App() {
+  const [config, setConfig, configReady] = useShared(CONFIG_KEY, DEFAULT_CONFIG);
+  const [log, setLog, logReady] = useShared(LOG_KEY, []);
+
+  const [screen, setScreen] = useState("select"); // select | tap | history | pin | admin
+  const [memberId, setMemberId] = useState(null);
+  const [toast, setToast] = useState("");
+  const [pin, setPin] = useState("");
+  const [pinError, setPinError] = useState(false);
+  const [adminTab, setAdminTab] = useState("log"); // log | members | products | settings
+  const [cart, setCart] = useState({});
+
+  const ready = configReady && logReady;
+  const currency = config.currency || "CHF";
+
+  useEffect(() => {
+    if (!toast) return;
+    const t = setTimeout(() => setToast(""), 1600);
+    return () => clearTimeout(t);
+  }, [toast]);
+
+  const member = useMemo(
+    () => config.members.find((m) => m.id === memberId) || null,
+    [config.members, memberId]
+  );
+
+  const myLog = useMemo(
+    () => log.filter((e) => e.memberId === memberId).sort((a, b) => b.ts - a.ts),
+    [log, memberId]
+  );
+
+  const productMap = useMemo(
+    () => Object.fromEntries(config.products.map((p) => [p.id, p])),
+    [config.products]
+  );
+
+  const cartLines = useMemo(
+    () => Object.entries(cart)
+      .filter(([, qty]) => qty > 0)
+      .map(([pid, qty]) => ({ product: productMap[pid], qty }))
+      .filter((l) => l.product),
+    [cart, productMap]
+  );
+  const cartCount = cartLines.reduce((s, l) => s + l.qty, 0);
+  const cartTotal = cartLines.reduce((s, l) => s + l.qty * l.product.price, 0);
+
+  function addToCart(product) {
+    setCart((c) => ({ ...c, [product.id]: (c[product.id] || 0) + 1 }));
+  }
+  function decFromCart(productId) {
+    setCart((c) => {
+      const next = { ...c, [productId]: Math.max(0, (c[productId] || 0) - 1) };
+      if (next[productId] === 0) delete next[productId];
+      return next;
+    });
+  }
+  function removeFromCart(productId) {
+    setCart((c) => {
+      const next = { ...c };
+      delete next[productId];
+      return next;
+    });
+  }
+  function clearCart() { setCart({}); }
+
+  function validateCart() {
+    if (cartLines.length === 0) return;
+    const now = Date.now();
+    const entries = [];
+    cartLines.forEach(({ product, qty }) => {
+      for (let i = 0; i < qty; i++) {
+        entries.push({
+          id: uid(),
+          ts: now,
+          memberId: member.id,
+          memberName: member.name,
+          productId: product.id,
+          productName: product.name,
+          price: product.price,
+        });
+      }
+    });
+    setLog((prev) => [...entries, ...prev]);
+    setToast(`${cartCount} article${cartCount > 1 ? "s" : ""} enregistré${cartCount > 1 ? "s" : ""} pour ${member.name}`);
+    clearCart();
+  }
+
+  if (!ready) {
+    return (
+      <div style={{ background: C.bg, minHeight: "100vh" }} className="flex items-center justify-center">
+        <div style={{ color: C.chalkDim, fontSize: 14 }}>Chargement du tableau…</div>
+      </div>
+    );
+  }
+
+  function ScreenSelect() {
+    return (
+      <div className="flex flex-col gap-5 p-5">
+        <Header subtitle="Qui prend un café ?" />
+        <div className="grid grid-cols-2 gap-3">
+          {config.members.map((m) => (
+            <button
+              key={m.id}
+              onClick={() => { setMemberId(m.id); clearCart(); setScreen("tap"); }}
+              style={{
+                background: C.surface2, border: `1px solid ${C.border}`, borderRadius: 12,
+                padding: "18px 10px", color: C.chalk, fontSize: 16, fontWeight: 700,
+                cursor: "pointer",
+              }}
+            >
+              {m.name}
+            </button>
+          ))}
+          {config.members.length === 0 && (
+            <div style={{ color: C.chalkDim, fontSize: 13 }}>
+              Aucun membre. Ajoutez-en depuis l'administration.
+            </div>
+          )}
+        </div>
+      </div>
+    );
+  }
+
+  function ScreenTap() {
+    return (
+      <div className="flex flex-col gap-5 p-5">
+        <div className="flex items-center justify-between">
+          <button
+            onClick={() => { setMemberId(null); clearCart(); setScreen("select"); }}
+            style={{ color: C.chalkDim, background: "none", border: "none", display: "flex", alignItems: "center", gap: 6, fontSize: 13, cursor: "pointer" }}
+          >
+            <ArrowLeftIcon size={16} /> Changer de personne
+          </button>
+          <button
+            onClick={() => setScreen("history")}
+            style={{ color: C.chalkDim, background: "none", border: "none", display: "flex", alignItems: "center", gap: 6, fontSize: 13, cursor: "pointer" }}
+          >
+            Mon historique <ListOrderedIcon size={15} />
+          </button>
+        </div>
+
+        <div>
+          <div style={{ color: C.chalkDim, fontSize: 13 }}>Bonjour</div>
+          <div style={{ color: C.chalk, fontSize: 26, fontWeight: 800, fontFamily: "Georgia, serif" }}>
+            {member?.name}
+          </div>
+        </div>
+
+        <div>
+          <div style={{ color: C.chalkDim, fontSize: 12, marginBottom: 8 }}>
+            Touchez un produit pour l'ajouter à votre sélection
+          </div>
+          <div className="grid grid-cols-2 gap-3">
+            {config.products.map((p) => {
+              const qty = cart[p.id] || 0;
+              return (
+                <button
+                  key={p.id}
+                  onClick={() => addToCart(p)}
+                  style={{
+                    position: "relative", background: qty > 0 ? C.raised : C.surface2,
+                    border: `1px solid ${qty > 0 ? C.amber : C.border}`, borderRadius: 14,
+                    padding: "20px 10px", cursor: "pointer", display: "flex", flexDirection: "column",
+                    alignItems: "center", gap: 6,
+                  }}
+                >
+                  {qty > 0 && (
+                    <span style={{
+                      position: "absolute", top: -8, right: -8, background: C.amber, color: "#1C1712",
+                      borderRadius: 999, minWidth: 22, height: 22, fontSize: 12, fontWeight: 800,
+                      display: "flex", alignItems: "center", justifyContent: "center", padding: "0 5px",
+                    }}>
+                      {qty}
+                    </span>
+                  )}
+                  <span style={{ fontSize: 30 }}>{p.emoji || "☕"}</span>
+                  <span style={{ color: C.chalk, fontWeight: 700, fontSize: 15 }}>{p.name}</span>
+                  <span style={{ color: C.amber, fontSize: 12 }}>{fmtMoney(p.price, currency)}</span>
+                </button>
+              );
+            })}
+            {config.products.length === 0 && (
+              <div style={{ color: C.chalkDim, fontSize: 13 }}>
+                Aucun produit. Ajoutez-en depuis l'administration.
+              </div>
+            )}
+          </div>
+        </div>
+
+        <div style={{ borderTop: `1px dashed ${C.border}`, paddingTop: 14 }}>
+          <div style={{ color: C.chalkDim, fontSize: 12, marginBottom: 8 }}>
+            Votre sélection {cartCount > 0 ? `(${cartCount})` : ""}
+          </div>
+
+          {cartLines.length === 0 ? (
+            <div style={{ color: C.chalkDim, fontSize: 13 }}>Rien pour l'instant.</div>
+          ) : (
+            <div className="flex flex-col gap-2">
+              {cartLines.map(({ product, qty }) => (
+                <div key={product.id} className="flex items-center justify-between" style={{ background: C.surface2, border: `1px solid ${C.border}`, borderRadius: 10, padding: "8px 12px" }}>
+                  <div className="flex items-center gap-2">
+                    <span>{product.emoji}</span>
+                    <span style={{ color: C.chalk, fontSize: 14 }}>{product.name}</span>
+                  </div>
+                  <div className="flex items-center gap-2">
+                    <button onClick={() => decFromCart(product.id)} style={{ background: C.surface, border: `1px solid ${C.border}`, borderRadius: 6, width: 26, height: 26, color: C.chalk, cursor: "pointer" }}>−</button>
+                    <span style={{ color: C.chalk, fontWeight: 700, minWidth: 16, textAlign: "center" }}>{qty}</span>
+                    <button onClick={() => addToCart(product)} style={{ background: C.surface, border: `1px solid ${C.border}`, borderRadius: 6, width: 26, height: 26, color: C.chalk, cursor: "pointer" }}>+</button>
+                    <button onClick={() => removeFromCart(product.id)} style={{ background: "none", border: "none", cursor: "pointer", marginLeft: 4 }}>
+                      <TrashIcon size={14} color={C.red} />
+                    </button>
+                  </div>
+                </div>
+              ))}
+              <div className="flex justify-between items-center" style={{ marginTop: 4 }}>
+                <span style={{ color: C.chalkDim, fontSize: 13 }}>Total</span>
+                <span style={{ color: C.amber, fontWeight: 800, fontSize: 16 }}>{fmtMoney(cartTotal, currency)}</span>
+              </div>
+              <Btn full onClick={validateCart}><CheckIcon size={16} /> Valider ma sélection</Btn>
+            </div>
+          )}
+        </div>
+      </div>
+    );
+  }
+
+  function ScreenHistory() {
+    const total = myLog.reduce((s, e) => s + e.price, 0);
+    return (
+      <div className="flex flex-col gap-5 p-5">
+        <button
+          onClick={() => setScreen("tap")}
+          style={{ color: C.chalkDim, background: "none", border: "none", display: "flex", alignItems: "center", gap: 6, fontSize: 13, cursor: "pointer" }}
+        >
+          <ArrowLeftIcon size={16} /> Retour
+        </button>
+
+        <div>
+          <div style={{ color: C.chalkDim, fontSize: 13 }}>Historique de</div>
+          <div style={{ color: C.chalk, fontSize: 24, fontWeight: 800, fontFamily: "Georgia, serif" }}>
+            {member?.name}
+          </div>
+        </div>
+
+        <div className="flex justify-between items-center" style={{ background: C.surface2, border: `1px solid ${C.border}`, borderRadius: 10, padding: "10px 14px" }}>
+          <span style={{ color: C.chalkDim, fontSize: 13 }}>{myLog.length} consommation{myLog.length > 1 ? "s" : ""} au total</span>
+          <span style={{ color: C.amber, fontWeight: 800, fontSize: 16 }}>{fmtMoney(total, currency)}</span>
+        </div>
+
+        <div className="flex flex-col gap-1" style={{ maxHeight: 420, overflowY: "auto" }}>
+          {myLog.length === 0 && <Empty text="Aucune consommation enregistrée pour l'instant." />}
+          {myLog.map((e) => (
+            <div key={e.id} style={{ borderBottom: `1px solid ${C.border}`, padding: "8px 2px" }} className="flex justify-between items-center">
+              <div>
+                <div style={{ color: C.chalk, fontSize: 13.5 }}>{e.productName}</div>
+                <div style={{ color: C.chalkDim, fontSize: 11 }}>{fmtDate(e.ts)}</div>
+              </div>
+              <div style={{ color: C.amber, fontSize: 13 }}>{fmtMoney(e.price, currency)}</div>
+            </div>
+          ))}
+        </div>
+      </div>
+    );
+  }
+
+  function ScreenPin() {
+    return (
+      <div className="flex flex-col gap-5 p-5">
+        <button
+          onClick={() => setScreen("select")}
+          style={{ color: C.chalkDim, background: "none", border: "none", display: "flex", alignItems: "center", gap: 6, fontSize: 13, cursor: "pointer" }}
+        >
+          <ArrowLeftIcon size={16} /> Retour
+        </button>
+        <div className="flex flex-col items-center gap-4" style={{ padding: "32px 0" }}>
+          <LockIcon size={28} color={C.amber} />
+          <div style={{ color: C.chalk, fontSize: 15, fontWeight: 700 }}>Accès administrateur</div>
+          <input
+            type="password"
+            inputMode="numeric"
+            value={pin}
+            onChange={(e) => { setPin(e.target.value); setPinError(false); }}
+            placeholder="Code PIN"
+            style={{
+              background: C.surface2, border: `1px solid ${pinError ? C.red : C.border}`,
+              borderRadius: 8, padding: "10px 14px", color: C.chalk, fontSize: 18,
+              textAlign: "center", letterSpacing: 4, width: 160, outline: "none",
+            }}
+          />
+          {pinError && <div style={{ color: C.red, fontSize: 12 }}>Code incorrect</div>}
+          <Btn onClick={() => {
+            if (pin === config.adminPin) { setScreen("admin"); setPin(""); }
+            else setPinError(true);
+          }}>
+            Déverrouiller
+          </Btn>
+        </div>
+      </div>
+    );
+  }
+
+  function ScreenAdmin() {
+    return (
+      <div className="flex flex-col gap-4 p-5">
+        <div className="flex items-center justify-between">
+          <button
+            onClick={() => setScreen("select")}
+            style={{ color: C.chalkDim, background: "none", border: "none", display: "flex", alignItems: "center", gap: 6, fontSize: 13, cursor: "pointer" }}
+          >
+            <ArrowLeftIcon size={16} /> Quitter l'administration
+          </button>
+        </div>
+
+        <div className="flex gap-2 flex-wrap">
+          <TabBtn icon={<ListOrderedIcon size={14} />} active={adminTab === "log"} onClick={() => setAdminTab("log")}>Consommations</TabBtn>
+          <TabBtn icon={<UsersIcon size={14} />} active={adminTab === "members"} onClick={() => setAdminTab("members")}>Membres</TabBtn>
+          <TabBtn icon={<PackageIcon size={14} />} active={adminTab === "products"} onClick={() => setAdminTab("products")}>Produits</TabBtn>
+          <TabBtn icon={<SettingsIcon size={14} />} active={adminTab === "settings"} onClick={() => setAdminTab("settings")}>Réglages</TabBtn>
+        </div>
+
+        {adminTab === "log" && <AdminLog />}
+        {adminTab === "members" && <AdminMembers />}
+        {adminTab === "products" && <AdminProducts />}
+        {adminTab === "settings" && <AdminSettings />}
+      </div>
+    );
+  }
+
+  function TabBtn({ children, icon, active, onClick }) {
+    return (
+      <button
+        onClick={onClick}
+        style={{
+          display: "flex", alignItems: "center", gap: 6, padding: "7px 12px", borderRadius: 999,
+          fontSize: 12.5, fontWeight: 600, cursor: "pointer",
+          background: active ? C.amber : C.surface2,
+          color: active ? "#1C1712" : C.chalkDim,
+          border: `1px solid ${active ? C.amber : C.border}`,
+        }}
+      >
+        {icon}{children}
+      </button>
+    );
+  }
+
+  function AdminLog() {
+    const [from, setFrom] = useState(isoDaysAgo(30));
+    const [to, setTo] = useState(todayISO());
+    const [filterMember, setFilterMember] = useState("all");
+    const [view, setView] = useState("summary");
+
+    const filtered = useMemo(() => {
+      const fromTs = new Date(from + "T00:00:00").getTime();
+      const toTs = new Date(to + "T23:59:59").getTime();
+      return log.filter((e) => {
+        if (e.ts < fromTs || e.ts > toTs) return false;
+        if (filterMember !== "all" && e.memberId !== filterMember) return false;
+        return true;
+      }).sort((a, b) => b.ts - a.ts);
+    }, [log, from, to, filterMember]);
+
+    const summary = useMemo(() => {
+      const byMember = {};
+      for (const e of filtered) {
+        if (!byMember[e.memberId]) byMember[e.memberId] = { name: e.memberName, count: 0, total: 0 };
+        byMember[e.memberId].count += 1;
+        byMember[e.memberId].total += e.price;
+      }
+      return Object.values(byMember).sort((a, b) => b.total - a.total);
+    }, [filtered]);
+
+    const grandTotal = filtered.reduce((s, e) => s + e.price, 0);
+
+    function exportCSV() {
+      const rows = [["Date", "Membre", "Produit", "Prix", "Devise"]];
+      filtered.forEach((e) => rows.push([fmtDate(e.ts), e.memberName, e.productName, e.price.toFixed(2), currency]));
+      rows.push([]);
+      rows.push(["Récapitulatif par personne"]);
+      rows.push(["Membre", "Nombre", "Total"]);
+      summary.forEach((s) => rows.push([s.name, s.count, s.total.toFixed(2)]));
+      rows.push(["TOTAL", filtered.length, grandTotal.toFixed(2)]);
+      const csv = rows.map((r) => r.map((c) => `"${String(c).replace(/"/g, '""')}"`).join(";")).join("\n");
+      const blob = new Blob(["\uFEFF" + csv], { type: "text/csv;charset=utf-8;" });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url; a.download = `cafe_${from}_${to}.csv`; a.click();
+      URL.revokeObjectURL(url);
+    }
+
+    return (
+      <div className="flex flex-col gap-4">
+        <div className="flex flex-wrap gap-2 items-end">
+          <Field label="Du" type="date" value={from} onChange={(e) => setFrom(e.target.value)} />
+          <Field label="Au" type="date" value={to} onChange={(e) => setTo(e.target.value)} />
+          <label className="flex flex-col gap-1" style={{ fontSize: 13, color: C.chalkDim }}>
+            Membre
+            <select
+              value={filterMember}
+              onChange={(e) => setFilterMember(e.target.value)}
+              style={{ background: C.surface2, border: `1px solid ${C.border}`, borderRadius: 8, padding: "8px 10px", color: C.chalk, fontSize: 14 }}
+            >
+              <option value="all">Tous</option>
+              {config.members.map((m) => <option key={m.id} value={m.id}>{m.name}</option>)}
+            </select>
+          </label>
+          <Btn onClick={exportCSV} style={{ marginLeft: "auto" }}>
+            <DownloadIcon size={14} /> Exporter CSV
+          </Btn>
+        </div>
+
+        <div className="flex items-center justify-between">
+          <div className="flex gap-2">
+            <TabBtn active={view === "summary"} onClick={() => setView("summary")}>Par personne</TabBtn>
+            <TabBtn active={view === "detail"} onClick={() => setView("detail")}>Détail</TabBtn>
+          </div>
+          <div style={{ color: C.chalkDim, fontSize: 13 }}>
+            {filtered.length} conso · <b style={{ color: C.amber }}>{fmtMoney(grandTotal, currency)}</b>
+          </div>
+        </div>
+
+        {view === "summary" ? (
+          <div className="flex flex-col gap-2">
+            {summary.length === 0 && <Empty text="Aucune consommation sur cette période." />}
+            {summary.map((s) => (
+              <div key={s.name} style={{ background: C.surface2, border: `1px solid ${C.border}`, borderRadius: 10, padding: "10px 14px" }} className="flex justify-between items-center">
+                <div>
+                  <div style={{ color: C.chalk, fontWeight: 700, fontSize: 14 }}>{s.name}</div>
+                  <div style={{ color: C.chalkDim, fontSize: 12 }}>{s.count} consommation{s.count > 1 ? "s" : ""}</div>
+                </div>
+                <div style={{ color: C.amber, fontWeight: 700 }}>{fmtMoney(s.total, currency)}</div>
+              </div>
+            ))}
+          </div>
+        ) : (
+          <div className="flex flex-col gap-1" style={{ maxHeight: 360, overflowY: "auto" }}>
+            {filtered.length === 0 && <Empty text="Aucune consommation sur cette période." />}
+            {filtered.map((e) => (
+              <div key={e.id} style={{ borderBottom: `1px solid ${C.border}`, padding: "7px 2px" }} className="flex justify-between items-center">
+                <div>
+                  <div style={{ color: C.chalk, fontSize: 13 }}>{e.memberName} — {e.productName}</div>
+                  <div style={{ color: C.chalkDim, fontSize: 11 }}>{fmtDate(e.ts)}</div>
+                </div>
+                <div style={{ color: C.amber, fontSize: 13 }}>{fmtMoney(e.price, currency)}</div>
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
+    );
+  }
+
+  function AdminMembers() {
+    const [name, setName] = useState("");
+    return (
+      <div className="flex flex-col gap-3">
+        <div className="flex gap-2">
+          <Field label="" placeholder="Nom du membre" value={name} onChange={(e) => setName(e.target.value)} />
+          <Btn onClick={() => {
+            if (!name.trim()) return;
+            setConfig((c) => ({ ...c, members: [...c.members, { id: uid(), name: name.trim() }] }));
+            setName("");
+          }}><PlusIcon size={14} /> Ajouter</Btn>
+        </div>
+        <div className="flex flex-col gap-2">
+          {config.members.map((m) => (
+            <div key={m.id} style={{ background: C.surface2, border: `1px solid ${C.border}`, borderRadius: 8, padding: "8px 12px" }} className="flex justify-between items-center">
+              <span style={{ color: C.chalk, fontSize: 14 }}>{m.name}</span>
+              <button onClick={() => setConfig((c) => ({ ...c, members: c.members.filter((x) => x.id !== m.id) }))}
+                style={{ background: "none", border: "none", cursor: "pointer" }}>
+                <TrashIcon size={15} color={C.red} />
+              </button>
+            </div>
+          ))}
+          {config.members.length === 0 && <Empty text="Aucun membre pour le moment." />}
+        </div>
+        <div style={{ color: C.chalkDim, fontSize: 11.5 }}>
+          Supprimer un membre ne supprime pas son historique de consommation déjà enregistré.
+        </div>
+      </div>
+    );
+  }
+
+  function AdminProducts() {
+    const [name, setName] = useState("");
+    const [price, setPrice] = useState("");
+    const [emoji, setEmoji] = useState("☕");
+    return (
+      <div className="flex flex-col gap-3">
+        <div className="flex gap-2 flex-wrap items-end">
+          <Field label="Emoji" style={{ width: 50, textAlign: "center" }} value={emoji} onChange={(e) => setEmoji(e.target.value)} />
+          <Field label="Produit" placeholder="Nom" value={name} onChange={(e) => setName(e.target.value)} />
+          <Field label={`Prix (${currency})`} type="number" step="0.05" placeholder="0.30" value={price} onChange={(e) => setPrice(e.target.value)} />
+          <Btn onClick={() => {
+            const p = parseFloat(price);
+            if (!name.trim() || isNaN(p)) return;
+            setConfig((c) => ({ ...c, products: [...c.products, { id: uid(), name: name.trim(), price: p, emoji: emoji || "☕" }] }));
+            setName(""); setPrice("");
+          }}><PlusIcon size={14} /> Ajouter</Btn>
+        </div>
+        <div className="flex flex-col gap-2">
+          {config.products.map((p) => (
+            <div key={p.id} style={{ background: C.surface2, border: `1px solid ${C.border}`, borderRadius: 8, padding: "8px 12px" }} className="flex justify-between items-center gap-2">
+              <span style={{ fontSize: 18 }}>{p.emoji}</span>
+              <span style={{ color: C.chalk, fontSize: 14, flex: 1 }}>{p.name}</span>
+              <input
+                type="number" step="0.05" defaultValue={p.price}
+                onBlur={(e) => {
+                  const val = parseFloat(e.target.value);
+                  if (!isNaN(val)) setConfig((c) => ({ ...c, products: c.products.map((x) => x.id === p.id ? { ...x, price: val } : x) }));
+                }}
+                style={{ width: 70, background: C.surface, border: `1px solid ${C.border}`, borderRadius: 6, padding: "5px 7px", color: C.amber, fontSize: 13 }}
+              />
+              <button onClick={() => setConfig((c) => ({ ...c, products: c.products.filter((x) => x.id !== p.id) }))}
+                style={{ background: "none", border: "none", cursor: "pointer" }}>
+                <TrashIcon size={15} color={C.red} />
+              </button>
+            </div>
+          ))}
+          {config.products.length === 0 && <Empty text="Aucun produit pour le moment." />}
+        </div>
+        <div style={{ color: C.chalkDim, fontSize: 11.5 }}>
+          Modifier le prix ne change que les futures consommations : l'historique garde le prix payé au moment de chaque conso.
+        </div>
+      </div>
+    );
+  }
+
+  function AdminSettings() {
+    const [newPin, setNewPin] = useState(config.adminPin);
+    const [confirmReset, setConfirmReset] = useState(false);
+    return (
+      <div className="flex flex-col gap-6">
+        <div className="flex flex-col gap-2">
+          <div style={{ color: C.chalk, fontWeight: 700, fontSize: 14 }}>Code PIN administrateur</div>
+          <div className="flex gap-2">
+            <Field label="" value={newPin} onChange={(e) => setNewPin(e.target.value)} />
+            <Btn onClick={() => setConfig((c) => ({ ...c, adminPin: newPin }))}><PenLineIcon size={14} /> Enregistrer</Btn>
+          </div>
+        </div>
+
+        <div className="flex flex-col gap-2">
+          <div style={{ color: C.chalk, fontWeight: 700, fontSize: 14 }}>Devise</div>
+          <select
+            value={currency}
+            onChange={(e) => setConfig((c) => ({ ...c, currency: e.target.value }))}
+            style={{ background: C.surface2, border: `1px solid ${C.border}`, borderRadius: 8, padding: "8px 10px", color: C.chalk, fontSize: 14, width: 120 }}
+          >
+            <option value="CHF">CHF</option>
+            <option value="EUR">EUR</option>
+            <option value="USD">USD</option>
+          </select>
+        </div>
+
+        <div className="flex flex-col gap-2" style={{ borderTop: `1px dashed ${C.border}`, paddingTop: 14 }}>
+          <div style={{ color: C.red, fontWeight: 700, fontSize: 14 }}>Zone sensible</div>
+          {!confirmReset ? (
+            <Btn variant="danger" onClick={() => setConfirmReset(true)}><RotateCcwIcon size={14} /> Réinitialiser tout l'historique</Btn>
+          ) : (
+            <div className="flex gap-2 items-center">
+              <span style={{ color: C.chalkDim, fontSize: 13 }}>Confirmer la suppression définitive ?</span>
+              <Btn variant="danger" onClick={() => { setLog([]); setConfirmReset(false); }}>Oui, supprimer</Btn>
+              <Btn variant="ghost" onClick={() => setConfirmReset(false)}>Annuler</Btn>
+            </div>
+          )}
+        </div>
+      </div>
+    );
+  }
+
+  function Empty({ text }) {
+    return <div style={{ color: C.chalkDim, fontSize: 13, padding: "10px 0" }}>{text}</div>;
+  }
+
+  function Header({ subtitle }) {
+    return (
+      <div className="flex items-start justify-between">
+        <div>
+          <div className="flex items-center gap-2">
+            <CoffeeIcon size={20} color={C.amber} />
+            <span style={{ color: C.chalk, fontWeight: 800, fontSize: 19, fontFamily: "Georgia, serif" }}>
+              Café de la classe
+            </span>
+          </div>
+          <div style={{ color: C.chalkDim, fontSize: 13, marginTop: 2 }}>{subtitle}</div>
+        </div>
+        <button
+          onClick={() => setScreen("pin")}
+          title="Administration"
+          style={{ background: C.surface2, border: `1px solid ${C.border}`, borderRadius: 8, padding: 8, cursor: "pointer" }}
+        >
+          <LockIcon size={15} color={C.chalkDim} />
+        </button>
+      </div>
+    );
+  }
+
+  return (
+    <div style={{ background: C.bg, minHeight: "100vh", fontFamily: "system-ui, -apple-system, sans-serif" }}>
+      <div style={{ maxWidth: 460, margin: "0 auto" }}>
+        {screen === "select" && <ScreenSelect />}
+        {screen === "tap" && member && <ScreenTap />}
+        {screen === "history" && member && <ScreenHistory />}
+        {screen === "pin" && <ScreenPin />}
+        {screen === "admin" && <ScreenAdmin />}
+      </div>
+      <Toast text={toast} />
+    </div>
+  );
+}
+
+const root = ReactDOM.createRoot(document.getElementById("root"));
+root.render(<App />);
+</script>
+</body>
+</html>
