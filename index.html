@@ -126,8 +126,24 @@ function useShared(key, fallback) {
     const listener = ref.on("value", (snap) => {
       const val = snap.val();
       if (val !== null && val !== undefined) {
-        if (typeof fallback === "object" && !Array.isArray(fallback) && val !== null) {
-          setValue({ ...fallback, ...val });
+        if (typeof fallback === "object" && !Array.isArray(fallback)) {
+          // Fusion champ par champ : une clé ABSENTE (jamais créée) prend la
+          // valeur par défaut, mais une liste VIDÉE intentionnellement
+          // (Firebase supprime les tableaux vides) reste vide et n'est
+          // JAMAIS remplacée par les valeurs par défaut.
+          const merged = { ...fallback };
+          for (const k of Object.keys(fallback)) {
+            if (Array.isArray(fallback[k])) {
+              if (Object.prototype.hasOwnProperty.call(val, k)) {
+                merged[k] = Array.isArray(val[k]) ? val[k] : Object.values(val[k] || {});
+              } else {
+                merged[k] = [];
+              }
+            } else if (Object.prototype.hasOwnProperty.call(val, k)) {
+              merged[k] = val[k];
+            }
+          }
+          setValue(merged);
         } else {
           setValue(val);
         }
@@ -240,6 +256,554 @@ function Toast({ text }) {
 }
 
 /* ---------------------------------------------------------
+   Écrans et composants — tous déclarés HORS de App()
+   pour que React ne les recrée pas à chaque frappe
+   (sinon chaque champ perd le focus après un seul caractère)
+--------------------------------------------------------- */
+function TabBtn({ children, icon, active, onClick }) {
+  return (
+    <button
+      onClick={onClick}
+      style={{
+        display: "flex", alignItems: "center", gap: 6, padding: "7px 12px", borderRadius: 999,
+        fontSize: 12.5, fontWeight: 600, cursor: "pointer",
+        background: active ? C.amber : C.surface2,
+        color: active ? "#1C1712" : C.chalkDim,
+        border: `1px solid ${active ? C.amber : C.border}`,
+      }}
+    >
+      {icon}{children}
+    </button>
+  );
+}
+
+function Empty({ text }) {
+  return <div style={{ color: C.chalkDim, fontSize: 13, padding: "10px 0" }}>{text}</div>;
+}
+
+function Header({ subtitle, onAdminClick }) {
+  return (
+    <div className="flex items-start justify-between">
+      <div>
+        <div className="flex items-center gap-2">
+          <CoffeeIcon size={20} color={C.amber} />
+          <span style={{ color: C.chalk, fontWeight: 800, fontSize: 19, fontFamily: "Georgia, serif" }}>
+            Café de la classe
+          </span>
+        </div>
+        <div style={{ color: C.chalkDim, fontSize: 13, marginTop: 2 }}>{subtitle}</div>
+      </div>
+      <button
+        onClick={onAdminClick}
+        title="Administration"
+        style={{ background: C.surface2, border: `1px solid ${C.border}`, borderRadius: 8, padding: 8, cursor: "pointer" }}
+      >
+        <LockIcon size={15} color={C.chalkDim} />
+      </button>
+    </div>
+  );
+}
+
+function ScreenSelect({ members, onSelectMember, onAdminClick }) {
+  return (
+    <div className="flex flex-col gap-5 p-5">
+      <Header subtitle="Qui prend un café ?" onAdminClick={onAdminClick} />
+      <div className="grid grid-cols-2 gap-3">
+        {members.map((m) => (
+          <button
+            key={m.id}
+            onClick={() => onSelectMember(m.id)}
+            style={{
+              background: C.surface2, border: `1px solid ${C.border}`, borderRadius: 12,
+              padding: "18px 10px", color: C.chalk, fontSize: 16, fontWeight: 700,
+              cursor: "pointer",
+            }}
+          >
+            {m.name}
+          </button>
+        ))}
+        {members.length === 0 && (
+          <div style={{ color: C.chalkDim, fontSize: 13, gridColumn: "span 2" }}>
+            Aucun membre. Ajoutez-en depuis l'administration.
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+function ScreenTap({
+  member, products, currency, cart, cartLines, cartCount, cartTotal,
+  onAddToCart, onDecFromCart, onRemoveFromCart, onValidateCart, onChangePerson, onShowHistory,
+}) {
+  return (
+    <div className="flex flex-col gap-5 p-5">
+      <div className="flex items-center justify-between">
+        <button
+          onClick={onChangePerson}
+          style={{ color: C.chalkDim, background: "none", border: "none", display: "flex", alignItems: "center", gap: 6, fontSize: 13, cursor: "pointer" }}
+        >
+          <ArrowLeftIcon size={16} /> Changer de personne
+        </button>
+        <button
+          onClick={onShowHistory}
+          style={{ color: C.chalkDim, background: "none", border: "none", display: "flex", alignItems: "center", gap: 6, fontSize: 13, cursor: "pointer" }}
+        >
+          Mon historique <ListOrderedIcon size={15} />
+        </button>
+      </div>
+
+      <div>
+        <div style={{ color: C.chalkDim, fontSize: 13 }}>Bonjour</div>
+        <div style={{ color: C.chalk, fontSize: 26, fontWeight: 800, fontFamily: "Georgia, serif" }}>
+          {member?.name}
+        </div>
+      </div>
+
+      <div>
+        <div style={{ color: C.chalkDim, fontSize: 12, marginBottom: 8 }}>
+          Touchez un produit pour l'ajouter à votre sélection
+        </div>
+        <div className="grid grid-cols-2 gap-3">
+          {products.map((p) => {
+            const qty = cart[p.id] || 0;
+            return (
+              <button
+                key={p.id}
+                onClick={() => onAddToCart(p)}
+                style={{
+                  position: "relative", background: qty > 0 ? C.raised : C.surface2,
+                  border: `1px solid ${qty > 0 ? C.amber : C.border}`, borderRadius: 14,
+                  padding: "20px 10px", cursor: "pointer", display: "flex", flexDirection: "column",
+                  alignItems: "center", gap: 6,
+                }}
+              >
+                {qty > 0 && (
+                  <span style={{
+                    position: "absolute", top: -8, right: -8, background: C.amber, color: "#1C1712",
+                    borderRadius: 999, minWidth: 22, height: 22, fontSize: 12, fontWeight: 800,
+                    display: "flex", alignItems: "center", justifyContent: "center", padding: "0 5px",
+                  }}>
+                    {qty}
+                  </span>
+                )}
+                <span style={{ fontSize: 30 }}>{p.emoji || "☕"}</span>
+                <span style={{ color: C.chalk, fontWeight: 700, fontSize: 15 }}>{p.name}</span>
+                <span style={{ color: C.amber, fontSize: 12 }}>{fmtMoney(p.price, currency)}</span>
+              </button>
+            );
+          })}
+          {products.length === 0 && (
+            <div style={{ color: C.chalkDim, fontSize: 13, gridColumn: "span 2" }}>
+              Aucun produit. Ajoutez-en depuis l'administration.
+            </div>
+          )}
+        </div>
+      </div>
+
+      <div style={{ borderTop: `1px dashed ${C.border}`, paddingTop: 14 }}>
+        <div style={{ color: C.chalkDim, fontSize: 12, marginBottom: 8 }}>
+          Votre sélection {cartCount > 0 ? `(${cartCount})` : ""}
+        </div>
+
+        {cartLines.length === 0 ? (
+          <div style={{ color: C.chalkDim, fontSize: 13 }}>Rien pour l'instant.</div>
+        ) : (
+          <div className="flex flex-col gap-2">
+            {cartLines.map(({ product, qty }) => (
+              <div key={product.id} className="flex items-center justify-between" style={{ background: C.surface2, border: `1px solid ${C.border}`, borderRadius: 10, padding: "8px 12px" }}>
+                <div className="flex items-center gap-2">
+                  <span>{product.emoji}</span>
+                  <span style={{ color: C.chalk, fontSize: 14 }}>{product.name}</span>
+                </div>
+                <div className="flex items-center gap-2">
+                  <button onClick={() => onDecFromCart(product.id)} style={{ background: C.surface, border: `1px solid ${C.border}`, borderRadius: 6, width: 26, height: 26, color: C.chalk, cursor: "pointer" }}>−</button>
+                  <span style={{ color: C.chalk, fontWeight: 700, minWidth: 16, textAlign: "center" }}>{qty}</span>
+                  <button onClick={() => onAddToCart(product)} style={{ background: C.surface, border: `1px solid ${C.border}`, borderRadius: 6, width: 26, height: 26, color: C.chalk, cursor: "pointer" }}>+</button>
+                  <button onClick={() => onRemoveFromCart(product.id)} style={{ background: "none", border: "none", cursor: "pointer", marginLeft: 4 }}>
+                    <TrashIcon size={14} color={C.red} />
+                  </button>
+                </div>
+              </div>
+            ))}
+            <div className="flex justify-between items-center" style={{ marginTop: 4 }}>
+              <span style={{ color: C.chalkDim, fontSize: 13 }}>Total</span>
+              <span style={{ color: C.amber, fontWeight: 800, fontSize: 16 }}>{fmtMoney(cartTotal, currency)}</span>
+            </div>
+            <Btn full onClick={onValidateCart}><CheckIcon size={16} /> Valider ma sélection</Btn>
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+function ScreenHistory({ member, myLog, currency, onBack }) {
+  const total = myLog.reduce((s, e) => s + (e.price || 0), 0);
+  return (
+    <div className="flex flex-col gap-5 p-5">
+      <button
+        onClick={onBack}
+        style={{ color: C.chalkDim, background: "none", border: "none", display: "flex", alignItems: "center", gap: 6, fontSize: 13, cursor: "pointer" }}
+      >
+        <ArrowLeftIcon size={16} /> Retour
+      </button>
+
+      <div>
+        <div style={{ color: C.chalkDim, fontSize: 13 }}>Historique de</div>
+        <div style={{ color: C.chalk, fontSize: 24, fontWeight: 800, fontFamily: "Georgia, serif" }}>
+          {member?.name}
+        </div>
+      </div>
+
+      <div className="flex justify-between items-center" style={{ background: C.surface2, border: `1px solid ${C.border}`, borderRadius: 10, padding: "10px 14px" }}>
+        <span style={{ color: C.chalkDim, fontSize: 13 }}>{myLog.length} consommation{myLog.length > 1 ? "s" : ""} au total</span>
+        <span style={{ color: C.amber, fontWeight: 800, fontSize: 16 }}>{fmtMoney(total, currency)}</span>
+      </div>
+
+      <div className="flex flex-col gap-1" style={{ maxHeight: 420, overflowY: "auto" }}>
+        {myLog.length === 0 && <Empty text="Aucune consommation enregistrée pour l'instant." />}
+        {myLog.map((e) => (
+          <div key={e.id} style={{ borderBottom: `1px solid ${C.border}`, padding: "8px 2px" }} className="flex justify-between items-center">
+            <div>
+              <div style={{ color: C.chalk, fontSize: 13.5 }}>{e.productName}</div>
+              <div style={{ color: C.chalkDim, fontSize: 11 }}>{fmtDate(e.ts)}</div>
+            </div>
+            <div style={{ color: C.amber, fontSize: 13 }}>{fmtMoney(e.price, currency)}</div>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+function ScreenPin({ pin, setPin, pinError, setPinError, onBack, onUnlock }) {
+  return (
+    <div className="flex flex-col gap-5 p-5">
+      <button
+        onClick={onBack}
+        style={{ color: C.chalkDim, background: "none", border: "none", display: "flex", alignItems: "center", gap: 6, fontSize: 13, cursor: "pointer" }}
+      >
+        <ArrowLeftIcon size={16} /> Retour
+      </button>
+      <div className="flex flex-col items-center gap-4" style={{ padding: "32px 0" }}>
+        <LockIcon size={28} color={C.amber} />
+        <div style={{ color: C.chalk, fontSize: 15, fontWeight: 700 }}>Accès administrateur</div>
+        <input
+          type="password"
+          inputMode="numeric"
+          autoFocus
+          value={pin}
+          onChange={(e) => { setPin(e.target.value); setPinError(false); }}
+          onKeyDown={(e) => { if (e.key === "Enter") onUnlock(); }}
+          placeholder="Code PIN"
+          style={{
+            background: C.surface2, border: `1px solid ${pinError ? C.red : C.border}`,
+            borderRadius: 8, padding: "10px 14px", color: C.chalk, fontSize: 18,
+            textAlign: "center", letterSpacing: 4, width: 160, outline: "none",
+          }}
+        />
+        {pinError && <div style={{ color: C.red, fontSize: 12 }}>Code incorrect</div>}
+        <Btn onClick={onUnlock}>Déverrouiller</Btn>
+      </div>
+    </div>
+  );
+}
+
+function AdminLog({ logEntries, members, currency }) {
+  const [from, setFrom] = useState(isoDaysAgo(30));
+  const [to, setTo] = useState(todayISO());
+  const [filterMember, setFilterMember] = useState("all");
+  const [view, setView] = useState("summary");
+
+  const filtered = useMemo(() => {
+    const fromTs = new Date(from + "T00:00:00").getTime();
+    const toTs = new Date(to + "T23:59:59").getTime();
+    return logEntries.filter((e) => {
+      if (e.ts < fromTs || e.ts > toTs) return false;
+      if (filterMember !== "all" && e.memberId !== filterMember) return false;
+      return true;
+    }).sort((a, b) => b.ts - a.ts);
+  }, [logEntries, from, to, filterMember]);
+
+  const summary = useMemo(() => {
+    const byMember = {};
+    for (const e of filtered) {
+      if (!byMember[e.memberId]) byMember[e.memberId] = { name: e.memberName, count: 0, total: 0 };
+      byMember[e.memberId].count += 1;
+      byMember[e.memberId].total += (e.price || 0);
+    }
+    return Object.values(byMember).sort((a, b) => b.total - a.total);
+  }, [filtered]);
+
+  // Récapitulatif par produit — calculé uniquement à partir des consommations
+  // réellement présentes dans la période filtrée. S'adapte automatiquement
+  // si des produits sont ajoutés ou supprimés dans l'administration : un
+  // produit supprimé mais déjà vendu reste listé (l'historique ne ment pas),
+  // un nouveau produit apparaît dès sa première vente.
+  const byProduct = useMemo(() => {
+    const map = {};
+    for (const e of filtered) {
+      const label = e.productName || "Produit supprimé";
+      if (!map[label]) map[label] = { name: label, count: 0, total: 0 };
+      map[label].count += 1;
+      map[label].total += (e.price || 0);
+    }
+    return Object.values(map).sort((a, b) => b.total - a.total);
+  }, [filtered]);
+
+  const grandTotal = filtered.reduce((s, e) => s + (e.price || 0), 0);
+
+  function exportCSV() {
+    const rows = [["Date", "Membre", "Produit", "Prix", "Devise"]];
+    filtered.forEach((e) => rows.push([fmtDate(e.ts), e.memberName, e.productName, (e.price || 0).toFixed(2), currency]));
+
+    rows.push([]);
+    rows.push(["Récapitulatif par personne"]);
+    rows.push(["Membre", "Nombre", "Total"]);
+    summary.forEach((s) => rows.push([s.name, s.count, s.total.toFixed(2)]));
+    rows.push(["TOTAL", filtered.length, grandTotal.toFixed(2)]);
+
+    rows.push([]);
+    rows.push(["Récapitulatif par produit"]);
+    rows.push(["Produit", "Nombre", "Total"]);
+    byProduct.forEach((p) => rows.push([p.name, p.count, p.total.toFixed(2)]));
+    rows.push(["TOTAL", filtered.length, grandTotal.toFixed(2)]);
+
+    const csv = rows.map((r) => r.map((c) => `"${String(c).replace(/"/g, '""')}"`).join(";")).join("\n");
+    const blob = new Blob(["\uFEFF" + csv], { type: "text/csv;charset=utf-8;" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url; a.download = `cafe_${from}_${to}.csv`; a.click();
+    URL.revokeObjectURL(url);
+  }
+
+  return (
+    <div className="flex flex-col gap-4">
+      <div className="flex flex-wrap gap-2 items-end">
+        <Field label="Du" type="date" value={from} onChange={(e) => setFrom(e.target.value)} />
+        <Field label="Au" type="date" value={to} onChange={(e) => setTo(e.target.value)} />
+        <label className="flex flex-col gap-1" style={{ fontSize: 13, color: C.chalkDim }}>
+          Membre
+          <select
+            value={filterMember}
+            onChange={(e) => setFilterMember(e.target.value)}
+            style={{ background: C.surface2, border: `1px solid ${C.border}`, borderRadius: 8, padding: "8px 10px", color: C.chalk, fontSize: 14 }}
+          >
+            <option value="all">Tous</option>
+            {members.map((m) => <option key={m.id} value={m.id}>{m.name}</option>)}
+          </select>
+        </label>
+        <Btn onClick={exportCSV} style={{ marginLeft: "auto" }}>
+          <DownloadIcon size={14} /> Exporter CSV
+        </Btn>
+      </div>
+
+      <div className="flex items-center justify-between">
+        <div className="flex gap-2">
+          <TabBtn active={view === "summary"} onClick={() => setView("summary")}>Par personne</TabBtn>
+          <TabBtn active={view === "products"} onClick={() => setView("products")}>Par produit</TabBtn>
+          <TabBtn active={view === "detail"} onClick={() => setView("detail")}>Détail</TabBtn>
+        </div>
+        <div style={{ color: C.chalkDim, fontSize: 13 }}>
+          {filtered.length} conso · <b style={{ color: C.amber }}>{fmtMoney(grandTotal, currency)}</b>
+        </div>
+      </div>
+
+      {view === "summary" && (
+        <div className="flex flex-col gap-2">
+          {summary.length === 0 && <Empty text="Aucune consommation sur cette période." />}
+          {summary.map((s) => (
+            <div key={s.name} style={{ background: C.surface2, border: `1px solid ${C.border}`, borderRadius: 10, padding: "10px 14px" }} className="flex justify-between items-center">
+              <div>
+                <div style={{ color: C.chalk, fontWeight: 700, fontSize: 14 }}>{s.name}</div>
+                <div style={{ color: C.chalkDim, fontSize: 12 }}>{s.count} consommation{s.count > 1 ? "s" : ""}</div>
+              </div>
+              <div style={{ color: C.amber, fontWeight: 700 }}>{fmtMoney(s.total, currency)}</div>
+            </div>
+          ))}
+        </div>
+      )}
+
+      {view === "products" && (
+        <div className="flex flex-col gap-2">
+          {byProduct.length === 0 && <Empty text="Aucune consommation sur cette période." />}
+          {byProduct.map((p) => (
+            <div key={p.name} style={{ background: C.surface2, border: `1px solid ${C.border}`, borderRadius: 10, padding: "10px 14px" }} className="flex justify-between items-center">
+              <div>
+                <div style={{ color: C.chalk, fontWeight: 700, fontSize: 14 }}>{p.name}</div>
+                <div style={{ color: C.chalkDim, fontSize: 12 }}>{p.count} vendu{p.count > 1 ? "s" : ""}</div>
+              </div>
+              <div style={{ color: C.amber, fontWeight: 700 }}>{fmtMoney(p.total, currency)}</div>
+            </div>
+          ))}
+        </div>
+      )}
+
+      {view === "detail" && (
+        <div className="flex flex-col gap-1" style={{ maxHeight: 360, overflowY: "auto" }}>
+          {filtered.length === 0 && <Empty text="Aucune consommation sur cette période." />}
+          {filtered.map((e) => (
+            <div key={e.id} style={{ borderBottom: `1px solid ${C.border}`, padding: "7px 2px" }} className="flex justify-between items-center">
+              <div>
+                <div style={{ color: C.chalk, fontSize: 13 }}>{e.memberName} — {e.productName}</div>
+                <div style={{ color: C.chalkDim, fontSize: 11 }}>{fmtDate(e.ts)}</div>
+              </div>
+              <div style={{ color: C.amber, fontSize: 13 }}>{fmtMoney(e.price, currency)}</div>
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function AdminMembers({ members, setConfig }) {
+  const [name, setName] = useState("");
+  return (
+    <div className="flex flex-col gap-3">
+      <div className="flex gap-2">
+        <Field label="" placeholder="Nom du membre" value={name} onChange={(e) => setName(e.target.value)} />
+        <Btn onClick={() => {
+          if (!name.trim()) return;
+          setConfig((c) => ({ ...c, members: [...(c?.members || []), { id: uid(), name: name.trim() }] }));
+          setName("");
+        }}><PlusIcon size={14} /> Ajouter</Btn>
+      </div>
+      <div className="flex flex-col gap-2">
+        {members.map((m) => (
+          <div key={m.id} style={{ background: C.surface2, border: `1px solid ${C.border}`, borderRadius: 8, padding: "8px 12px" }} className="flex justify-between items-center">
+            <span style={{ color: C.chalk, fontSize: 14 }}>{m.name}</span>
+            <button onClick={() => setConfig((c) => ({ ...c, members: (c?.members || []).filter((x) => x.id !== m.id) }))}
+              style={{ background: "none", border: "none", cursor: "pointer" }}>
+              <TrashIcon size={15} color={C.red} />
+            </button>
+          </div>
+        ))}
+        {members.length === 0 && <Empty text="Aucun membre pour le moment." />}
+      </div>
+      <div style={{ color: C.chalkDim, fontSize: 11.5 }}>
+        Supprimer un membre ne supprime pas son historique de consommation déjà enregistré.
+      </div>
+    </div>
+  );
+}
+
+function AdminProducts({ products, currency, setConfig }) {
+  const [name, setName] = useState("");
+  const [price, setPrice] = useState("");
+  const [emoji, setEmoji] = useState("☕");
+  return (
+    <div className="flex flex-col gap-3">
+      <div className="flex gap-2 flex-wrap items-end">
+        <Field label="Emoji" style={{ width: 50, textAlign: "center" }} value={emoji} onChange={(e) => setEmoji(e.target.value)} />
+        <Field label="Produit" placeholder="Nom" value={name} onChange={(e) => setName(e.target.value)} />
+        <Field label={`Prix (${currency})`} type="number" step="0.05" placeholder="0.30" value={price} onChange={(e) => setPrice(e.target.value)} />
+        <Btn onClick={() => {
+          const p = parseFloat(price);
+          if (!name.trim() || isNaN(p)) return;
+          setConfig((c) => ({ ...c, products: [...(c?.products || []), { id: uid(), name: name.trim(), price: p, emoji: emoji || "☕" }] }));
+          setName(""); setPrice("");
+        }}><PlusIcon size={14} /> Ajouter</Btn>
+      </div>
+      <div className="flex flex-col gap-2">
+        {products.map((p) => (
+          <div key={p.id} style={{ background: C.surface2, border: `1px solid ${C.border}`, borderRadius: 8, padding: "8px 12px" }} className="flex justify-between items-center gap-2">
+            <span style={{ fontSize: 18 }}>{p.emoji}</span>
+            <span style={{ color: C.chalk, fontSize: 14, flex: 1 }}>{p.name}</span>
+            <input
+              type="number" step="0.05" defaultValue={p.price}
+              onBlur={(e) => {
+                const val = parseFloat(e.target.value);
+                if (!isNaN(val)) setConfig((c) => ({ ...c, products: (c?.products || []).map((x) => x.id === p.id ? { ...x, price: val } : x) }));
+              }}
+              style={{ width: 70, background: C.surface, border: `1px solid ${C.border}`, borderRadius: 6, padding: "5px 7px", color: C.amber, fontSize: 13 }}
+            />
+            <button onClick={() => setConfig((c) => ({ ...c, products: (c?.products || []).filter((x) => x.id !== p.id) }))}
+              style={{ background: "none", border: "none", cursor: "pointer" }}>
+              <TrashIcon size={15} color={C.red} />
+            </button>
+          </div>
+        ))}
+        {products.length === 0 && <Empty text="Aucun produit pour le moment." />}
+      </div>
+      <div style={{ color: C.chalkDim, fontSize: 11.5 }}>
+        Modifier le prix ne change que les futures consommations : l'historique garde le prix payé au moment de chaque conso.
+      </div>
+    </div>
+  );
+}
+
+function AdminSettings({ adminPin, currency, setConfig, setLog }) {
+  const [newPin, setNewPin] = useState(adminPin || "1234");
+  const [confirmReset, setConfirmReset] = useState(false);
+  return (
+    <div className="flex flex-col gap-6">
+      <div className="flex flex-col gap-2">
+        <div style={{ color: C.chalk, fontWeight: 700, fontSize: 14 }}>Code PIN administrateur</div>
+        <div className="flex gap-2">
+          <Field label="" value={newPin} onChange={(e) => setNewPin(e.target.value)} />
+          <Btn onClick={() => setConfig((c) => ({ ...c, adminPin: newPin }))}><PenLineIcon size={14} /> Enregistrer</Btn>
+        </div>
+      </div>
+
+      <div className="flex flex-col gap-2">
+        <div style={{ color: C.chalk, fontWeight: 700, fontSize: 14 }}>Devise</div>
+        <select
+          value={currency}
+          onChange={(e) => setConfig((c) => ({ ...c, currency: e.target.value }))}
+          style={{ background: C.surface2, border: `1px solid ${C.border}`, borderRadius: 8, padding: "8px 10px", color: C.chalk, fontSize: 14, width: 120 }}
+        >
+          <option value="CHF">CHF</option>
+          <option value="EUR">EUR</option>
+          <option value="USD">USD</option>
+        </select>
+      </div>
+
+      <div className="flex flex-col gap-2" style={{ borderTop: `1px dashed ${C.border}`, paddingTop: 14 }}>
+        <div style={{ color: C.red, fontWeight: 700, fontSize: 14 }}>Zone sensible</div>
+        {!confirmReset ? (
+          <Btn variant="danger" onClick={() => setConfirmReset(true)}><RotateCcwIcon size={14} /> Réinitialiser tout l'historique</Btn>
+        ) : (
+          <div className="flex gap-2 items-center">
+            <span style={{ color: C.chalkDim, fontSize: 13 }}>Confirmer la suppression définitive ?</span>
+            <Btn variant="danger" onClick={() => { setLog([]); setConfirmReset(false); }}>Oui, supprimer</Btn>
+            <Btn variant="ghost" onClick={() => setConfirmReset(false)}>Annuler</Btn>
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+function ScreenAdmin({ adminTab, setAdminTab, onExit, logEntries, members, products, currency, adminPin, setConfig, setLog }) {
+  return (
+    <div className="flex flex-col gap-4 p-5">
+      <div className="flex items-center justify-between">
+        <button
+          onClick={onExit}
+          style={{ color: C.chalkDim, background: "none", border: "none", display: "flex", alignItems: "center", gap: 6, fontSize: 13, cursor: "pointer" }}
+        >
+          <ArrowLeftIcon size={16} /> Quitter l'administration
+        </button>
+      </div>
+
+      <div className="flex gap-2 flex-wrap">
+        <TabBtn icon={<ListOrderedIcon size={14} />} active={adminTab === "log"} onClick={() => setAdminTab("log")}>Consommations</TabBtn>
+        <TabBtn icon={<UsersIcon size={14} />} active={adminTab === "members"} onClick={() => setAdminTab("members")}>Membres</TabBtn>
+        <TabBtn icon={<PackageIcon size={14} />} active={adminTab === "products"} onClick={() => setAdminTab("products")}>Produits</TabBtn>
+        <TabBtn icon={<SettingsIcon size={14} />} active={adminTab === "settings"} onClick={() => setAdminTab("settings")}>Réglages</TabBtn>
+      </div>
+
+      {adminTab === "log" && <AdminLog logEntries={logEntries} members={members} currency={currency} />}
+      {adminTab === "members" && <AdminMembers members={members} setConfig={setConfig} />}
+      {adminTab === "products" && <AdminProducts products={products} currency={currency} setConfig={setConfig} />}
+      {adminTab === "settings" && <AdminSettings adminPin={adminPin} currency={currency} setConfig={setConfig} setLog={setLog} />}
+    </div>
+  );
+}
+
+/* ---------------------------------------------------------
    Application Principale
 --------------------------------------------------------- */
 function App() {
@@ -332,6 +896,16 @@ function App() {
     clearCart();
   }
 
+  function unlockAdmin() {
+    if (pin === (config?.adminPin || DEFAULT_CONFIG.adminPin)) {
+      setScreen("admin");
+      setPin("");
+      setPinError(false);
+    } else {
+      setPinError(true);
+    }
+  }
+
   if (!ready) {
     return (
       <div style={{ background: C.bg, minHeight: "100vh" }} className="flex items-center justify-center">
@@ -340,515 +914,60 @@ function App() {
     );
   }
 
-  function ScreenSelect() {
-    return (
-      <div className="flex flex-col gap-5 p-5">
-        <Header subtitle="Qui prend un café ?" />
-        <div className="grid grid-cols-2 gap-3">
-          {members.map((m) => (
-            <button
-              key={m.id}
-              onClick={() => { setMemberId(m.id); clearCart(); setScreen("tap"); }}
-              style={{
-                background: C.surface2, border: `1px solid ${C.border}`, borderRadius: 12,
-                padding: "18px 10px", color: C.chalk, fontSize: 16, fontWeight: 700,
-                cursor: "pointer",
-              }}
-            >
-              {m.name}
-            </button>
-          ))}
-          {members.length === 0 && (
-            <div style={{ color: C.chalkDim, fontSize: 13, gridColumn: "span 2" }}>
-              Aucun membre. Ajoutez-en depuis l'administration.
-            </div>
-          )}
-        </div>
-      </div>
-    );
-  }
-
-  function ScreenTap() {
-    return (
-      <div className="flex flex-col gap-5 p-5">
-        <div className="flex items-center justify-between">
-          <button
-            onClick={() => { setMemberId(null); clearCart(); setScreen("select"); }}
-            style={{ color: C.chalkDim, background: "none", border: "none", display: "flex", alignItems: "center", gap: 6, fontSize: 13, cursor: "pointer" }}
-          >
-            <ArrowLeftIcon size={16} /> Changer de personne
-          </button>
-          <button
-            onClick={() => setScreen("history")}
-            style={{ color: C.chalkDim, background: "none", border: "none", display: "flex", alignItems: "center", gap: 6, fontSize: 13, cursor: "pointer" }}
-          >
-            Mon historique <ListOrderedIcon size={15} />
-          </button>
-        </div>
-
-        <div>
-          <div style={{ color: C.chalkDim, fontSize: 13 }}>Bonjour</div>
-          <div style={{ color: C.chalk, fontSize: 26, fontWeight: 800, fontFamily: "Georgia, serif" }}>
-            {member?.name}
-          </div>
-        </div>
-
-        <div>
-          <div style={{ color: C.chalkDim, fontSize: 12, marginBottom: 8 }}>
-            Touchez un produit pour l'ajouter à votre sélection
-          </div>
-          <div className="grid grid-cols-2 gap-3">
-            {products.map((p) => {
-              const qty = cart[p.id] || 0;
-              return (
-                <button
-                  key={p.id}
-                  onClick={() => addToCart(p)}
-                  style={{
-                    position: "relative", background: qty > 0 ? C.raised : C.surface2,
-                    border: `1px solid ${qty > 0 ? C.amber : C.border}`, borderRadius: 14,
-                    padding: "20px 10px", cursor: "pointer", display: "flex", flexDirection: "column",
-                    alignItems: "center", gap: 6,
-                  }}
-                >
-                  {qty > 0 && (
-                    <span style={{
-                      position: "absolute", top: -8, right: -8, background: C.amber, color: "#1C1712",
-                      borderRadius: 999, minWidth: 22, height: 22, fontSize: 12, fontWeight: 800,
-                      display: "flex", alignItems: "center", justifyContent: "center", padding: "0 5px",
-                    }}>
-                      {qty}
-                    </span>
-                  )}
-                  <span style={{ fontSize: 30 }}>{p.emoji || "☕"}</span>
-                  <span style={{ color: C.chalk, fontWeight: 700, fontSize: 15 }}>{p.name}</span>
-                  <span style={{ color: C.amber, fontSize: 12 }}>{fmtMoney(p.price, currency)}</span>
-                </button>
-              );
-            })}
-            {products.length === 0 && (
-              <div style={{ color: C.chalkDim, fontSize: 13, gridColumn: "span 2" }}>
-                Aucun produit. Ajoutez-en depuis l'administration.
-              </div>
-            )}
-          </div>
-        </div>
-
-        <div style={{ borderTop: `1px dashed ${C.border}`, paddingTop: 14 }}>
-          <div style={{ color: C.chalkDim, fontSize: 12, marginBottom: 8 }}>
-            Votre sélection {cartCount > 0 ? `(${cartCount})` : ""}
-          </div>
-
-          {cartLines.length === 0 ? (
-            <div style={{ color: C.chalkDim, fontSize: 13 }}>Rien pour l'instant.</div>
-          ) : (
-            <div className="flex flex-col gap-2">
-              {cartLines.map(({ product, qty }) => (
-                <div key={product.id} className="flex items-center justify-between" style={{ background: C.surface2, border: `1px solid ${C.border}`, borderRadius: 10, padding: "8px 12px" }}>
-                  <div className="flex items-center gap-2">
-                    <span>{product.emoji}</span>
-                    <span style={{ color: C.chalk, fontSize: 14 }}>{product.name}</span>
-                  </div>
-                  <div className="flex items-center gap-2">
-                    <button onClick={() => decFromCart(product.id)} style={{ background: C.surface, border: `1px solid ${C.border}`, borderRadius: 6, width: 26, height: 26, color: C.chalk, cursor: "pointer" }}>−</button>
-                    <span style={{ color: C.chalk, fontWeight: 700, minWidth: 16, textAlign: "center" }}>{qty}</span>
-                    <button onClick={() => addToCart(product)} style={{ background: C.surface, border: `1px solid ${C.border}`, borderRadius: 6, width: 26, height: 26, color: C.chalk, cursor: "pointer" }}>+</button>
-                    <button onClick={() => removeFromCart(product.id)} style={{ background: "none", border: "none", cursor: "pointer", marginLeft: 4 }}>
-                      <TrashIcon size={14} color={C.red} />
-                    </button>
-                  </div>
-                </div>
-              ))}
-              <div className="flex justify-between items-center" style={{ marginTop: 4 }}>
-                <span style={{ color: C.chalkDim, fontSize: 13 }}>Total</span>
-                <span style={{ color: C.amber, fontWeight: 800, fontSize: 16 }}>{fmtMoney(cartTotal, currency)}</span>
-              </div>
-              <Btn full onClick={validateCart}><CheckIcon size={16} /> Valider ma sélection</Btn>
-            </div>
-          )}
-        </div>
-      </div>
-    );
-  }
-
-  function ScreenHistory() {
-    const total = myLog.reduce((s, e) => s + (e.price || 0), 0);
-    return (
-      <div className="flex flex-col gap-5 p-5">
-        <button
-          onClick={() => setScreen("tap")}
-          style={{ color: C.chalkDim, background: "none", border: "none", display: "flex", alignItems: "center", gap: 6, fontSize: 13, cursor: "pointer" }}
-        >
-          <ArrowLeftIcon size={16} /> Retour
-        </button>
-
-        <div>
-          <div style={{ color: C.chalkDim, fontSize: 13 }}>Historique de</div>
-          <div style={{ color: C.chalk, fontSize: 24, fontWeight: 800, fontFamily: "Georgia, serif" }}>
-            {member?.name}
-          </div>
-        </div>
-
-        <div className="flex justify-between items-center" style={{ background: C.surface2, border: `1px solid ${C.border}`, borderRadius: 10, padding: "10px 14px" }}>
-          <span style={{ color: C.chalkDim, fontSize: 13 }}>{myLog.length} consommation{myLog.length > 1 ? "s" : ""} au total</span>
-          <span style={{ color: C.amber, fontWeight: 800, fontSize: 16 }}>{fmtMoney(total, currency)}</span>
-        </div>
-
-        <div className="flex flex-col gap-1" style={{ maxHeight: 420, overflowY: "auto" }}>
-          {myLog.length === 0 && <Empty text="Aucune consommation enregistrée pour l'instant." />}
-          {myLog.map((e) => (
-            <div key={e.id} style={{ borderBottom: `1px solid ${C.border}`, padding: "8px 2px" }} className="flex justify-between items-center">
-              <div>
-                <div style={{ color: C.chalk, fontSize: 13.5 }}>{e.productName}</div>
-                <div style={{ color: C.chalkDim, fontSize: 11 }}>{fmtDate(e.ts)}</div>
-              </div>
-              <div style={{ color: C.amber, fontSize: 13 }}>{fmtMoney(e.price, currency)}</div>
-            </div>
-          ))}
-        </div>
-      </div>
-    );
-  }
-
-  function ScreenPin() {
-    return (
-      <div className="flex flex-col gap-5 p-5">
-        <button
-          onClick={() => setScreen("select")}
-          style={{ color: C.chalkDim, background: "none", border: "none", display: "flex", alignItems: "center", gap: 6, fontSize: 13, cursor: "pointer" }}
-        >
-          <ArrowLeftIcon size={16} /> Retour
-        </button>
-        <div className="flex flex-col items-center gap-4" style={{ padding: "32px 0" }}>
-          <LockIcon size={28} color={C.amber} />
-          <div style={{ color: C.chalk, fontSize: 15, fontWeight: 700 }}>Accès administrateur</div>
-          <input
-            type="password"
-            inputMode="numeric"
-            value={pin}
-            onChange={(e) => { setPin(e.target.value); setPinError(false); }}
-            placeholder="Code PIN"
-            style={{
-              background: C.surface2, border: `1px solid ${pinError ? C.red : C.border}`,
-              borderRadius: 8, padding: "10px 14px", color: C.chalk, fontSize: 18,
-              textAlign: "center", letterSpacing: 4, width: 160, outline: "none",
-            }}
-          />
-          {pinError && <div style={{ color: C.red, fontSize: 12 }}>Code incorrect</div>}
-          <Btn onClick={() => {
-            if (pin === (config?.adminPin || DEFAULT_CONFIG.adminPin)) { setScreen("admin"); setPin(""); }
-            else setPinError(true);
-          }}>
-            Déverrouiller
-          </Btn>
-        </div>
-      </div>
-    );
-  }
-
-  function ScreenAdmin() {
-    return (
-      <div className="flex flex-col gap-4 p-5">
-        <div className="flex items-center justify-between">
-          <button
-            onClick={() => setScreen("select")}
-            style={{ color: C.chalkDim, background: "none", border: "none", display: "flex", alignItems: "center", gap: 6, fontSize: 13, cursor: "pointer" }}
-          >
-            <ArrowLeftIcon size={16} /> Quitter l'administration
-          </button>
-        </div>
-
-        <div className="flex gap-2 flex-wrap">
-          <TabBtn icon={<ListOrderedIcon size={14} />} active={adminTab === "log"} onClick={() => setAdminTab("log")}>Consommations</TabBtn>
-          <TabBtn icon={<UsersIcon size={14} />} active={adminTab === "members"} onClick={() => setAdminTab("members")}>Membres</TabBtn>
-          <TabBtn icon={<PackageIcon size={14} />} active={adminTab === "products"} onClick={() => setAdminTab("products")}>Produits</TabBtn>
-          <TabBtn icon={<SettingsIcon size={14} />} active={adminTab === "settings"} onClick={() => setAdminTab("settings")}>Réglages</TabBtn>
-        </div>
-
-        {adminTab === "log" && <AdminLog />}
-        {adminTab === "members" && <AdminMembers />}
-        {adminTab === "products" && <AdminProducts />}
-        {adminTab === "settings" && <AdminSettings />}
-      </div>
-    );
-  }
-
-  function TabBtn({ children, icon, active, onClick }) {
-    return (
-      <button
-        onClick={onClick}
-        style={{
-          display: "flex", alignItems: "center", gap: 6, padding: "7px 12px", borderRadius: 999,
-          fontSize: 12.5, fontWeight: 600, cursor: "pointer",
-          background: active ? C.amber : C.surface2,
-          color: active ? "#1C1712" : C.chalkDim,
-          border: `1px solid ${active ? C.amber : C.border}`,
-        }}
-      >
-        {icon}{children}
-      </button>
-    );
-  }
-
-  function AdminLog() {
-    const [from, setFrom] = useState(isoDaysAgo(30));
-    const [to, setTo] = useState(todayISO());
-    const [filterMember, setFilterMember] = useState("all");
-    const [view, setView] = useState("summary");
-
-    const filtered = useMemo(() => {
-      const fromTs = new Date(from + "T00:00:00").getTime();
-      const toTs = new Date(to + "T23:59:59").getTime();
-      return logEntries.filter((e) => {
-        if (e.ts < fromTs || e.ts > toTs) return false;
-        if (filterMember !== "all" && e.memberId !== filterMember) return false;
-        return true;
-      }).sort((a, b) => b.ts - a.ts);
-    }, [logEntries, from, to, filterMember]);
-
-    const summary = useMemo(() => {
-      const byMember = {};
-      for (const e of filtered) {
-        if (!byMember[e.memberId]) byMember[e.memberId] = { name: e.memberName, count: 0, total: 0 };
-        byMember[e.memberId].count += 1;
-        byMember[e.memberId].total += (e.price || 0);
-      }
-      return Object.values(byMember).sort((a, b) => b.total - a.total);
-    }, [filtered]);
-
-    const grandTotal = filtered.reduce((s, e) => s + (e.price || 0), 0);
-
-    function exportCSV() {
-      const rows = [["Date", "Membre", "Produit", "Prix", "Devise"]];
-      filtered.forEach((e) => rows.push([fmtDate(e.ts), e.memberName, e.productName, (e.price || 0).toFixed(2), currency]));
-      rows.push([]);
-      rows.push(["Récapitulatif par personne"]);
-      rows.push(["Membre", "Nombre", "Total"]);
-      summary.forEach((s) => rows.push([s.name, s.count, s.total.toFixed(2)]));
-      rows.push(["TOTAL", filtered.length, grandTotal.toFixed(2)]);
-      const csv = rows.map((r) => r.map((c) => `"${String(c).replace(/"/g, '""')}"`).join(";")).join("\n");
-      const blob = new Blob(["\uFEFF" + csv], { type: "text/csv;charset=utf-8;" });
-      const url = URL.createObjectURL(blob);
-      const a = document.createElement("a");
-      a.href = url; a.download = `cafe_${from}_${to}.csv`; a.click();
-      URL.revokeObjectURL(url);
-    }
-
-    return (
-      <div className="flex flex-col gap-4">
-        <div className="flex flex-wrap gap-2 items-end">
-          <Field label="Du" type="date" value={from} onChange={(e) => setFrom(e.target.value)} />
-          <Field label="Au" type="date" value={to} onChange={(e) => setTo(e.target.value)} />
-          <label className="flex flex-col gap-1" style={{ fontSize: 13, color: C.chalkDim }}>
-            Membre
-            <select
-              value={filterMember}
-              onChange={(e) => setFilterMember(e.target.value)}
-              style={{ background: C.surface2, border: `1px solid ${C.border}`, borderRadius: 8, padding: "8px 10px", color: C.chalk, fontSize: 14 }}
-            >
-              <option value="all">Tous</option>
-              {members.map((m) => <option key={m.id} value={m.id}>{m.name}</option>)}
-            </select>
-          </label>
-          <Btn onClick={exportCSV} style={{ marginLeft: "auto" }}>
-            <DownloadIcon size={14} /> Exporter CSV
-          </Btn>
-        </div>
-
-        <div className="flex items-center justify-between">
-          <div className="flex gap-2">
-            <TabBtn active={view === "summary"} onClick={() => setView("summary")}>Par personne</TabBtn>
-            <TabBtn active={view === "detail"} onClick={() => setView("detail")}>Détail</TabBtn>
-          </div>
-          <div style={{ color: C.chalkDim, fontSize: 13 }}>
-            {filtered.length} conso · <b style={{ color: C.amber }}>{fmtMoney(grandTotal, currency)}</b>
-          </div>
-        </div>
-
-        {view === "summary" ? (
-          <div className="flex flex-col gap-2">
-            {summary.length === 0 && <Empty text="Aucune consommation sur cette période." />}
-            {summary.map((s) => (
-              <div key={s.name} style={{ background: C.surface2, border: `1px solid ${C.border}`, borderRadius: 10, padding: "10px 14px" }} className="flex justify-between items-center">
-                <div>
-                  <div style={{ color: C.chalk, fontWeight: 700, fontSize: 14 }}>{s.name}</div>
-                  <div style={{ color: C.chalkDim, fontSize: 12 }}>{s.count} consommation{s.count > 1 ? "s" : ""}</div>
-                </div>
-                <div style={{ color: C.amber, fontWeight: 700 }}>{fmtMoney(s.total, currency)}</div>
-              </div>
-            ))}
-          </div>
-        ) : (
-          <div className="flex flex-col gap-1" style={{ maxHeight: 360, overflowY: "auto" }}>
-            {filtered.length === 0 && <Empty text="Aucune consommation sur cette période." />}
-            {filtered.map((e) => (
-              <div key={e.id} style={{ borderBottom: `1px solid ${C.border}`, padding: "7px 2px" }} className="flex justify-between items-center">
-                <div>
-                  <div style={{ color: C.chalk, fontSize: 13 }}>{e.memberName} — {e.productName}</div>
-                  <div style={{ color: C.chalkDim, fontSize: 11 }}>{fmtDate(e.ts)}</div>
-                </div>
-                <div style={{ color: C.amber, fontSize: 13 }}>{fmtMoney(e.price, currency)}</div>
-              </div>
-            ))}
-          </div>
-        )}
-      </div>
-    );
-  }
-
-  function AdminMembers() {
-    const [name, setName] = useState("");
-    return (
-      <div className="flex flex-col gap-3">
-        <div className="flex gap-2">
-          <Field label="" placeholder="Nom du membre" value={name} onChange={(e) => setName(e.target.value)} />
-          <Btn onClick={() => {
-            if (!name.trim()) return;
-            setConfig((c) => ({ ...c, members: [...(c?.members || []), { id: uid(), name: name.trim() }] }));
-            setName("");
-          }}><PlusIcon size={14} /> Ajouter</Btn>
-        </div>
-        <div className="flex flex-col gap-2">
-          {members.map((m) => (
-            <div key={m.id} style={{ background: C.surface2, border: `1px solid ${C.border}`, borderRadius: 8, padding: "8px 12px" }} className="flex justify-between items-center">
-              <span style={{ color: C.chalk, fontSize: 14 }}>{m.name}</span>
-              <button onClick={() => setConfig((c) => ({ ...c, members: (c?.members || []).filter((x) => x.id !== m.id) }))}
-                style={{ background: "none", border: "none", cursor: "pointer" }}>
-                <TrashIcon size={15} color={C.red} />
-              </button>
-            </div>
-          ))}
-          {members.length === 0 && <Empty text="Aucun membre pour le moment." />}
-        </div>
-        <div style={{ color: C.chalkDim, fontSize: 11.5 }}>
-          Supprimer un membre ne supprime pas son historique de consommation déjà enregistré.
-        </div>
-      </div>
-    );
-  }
-
-  function AdminProducts() {
-    const [name, setName] = useState("");
-    const [price, setPrice] = useState("");
-    const [emoji, setEmoji] = useState("☕");
-    return (
-      <div className="flex flex-col gap-3">
-        <div className="flex gap-2 flex-wrap items-end">
-          <Field label="Emoji" style={{ width: 50, textAlign: "center" }} value={emoji} onChange={(e) => setEmoji(e.target.value)} />
-          <Field label="Produit" placeholder="Nom" value={name} onChange={(e) => setName(e.target.value)} />
-          <Field label={`Prix (${currency})`} type="number" step="0.05" placeholder="0.30" value={price} onChange={(e) => setPrice(e.target.value)} />
-          <Btn onClick={() => {
-            const p = parseFloat(price);
-            if (!name.trim() || isNaN(p)) return;
-            setConfig((c) => ({ ...c, products: [...(c?.products || []), { id: uid(), name: name.trim(), price: p, emoji: emoji || "☕" }] }));
-            setName(""); setPrice("");
-          }}><PlusIcon size={14} /> Ajouter</Btn>
-        </div>
-        <div className="flex flex-col gap-2">
-          {products.map((p) => (
-            <div key={p.id} style={{ background: C.surface2, border: `1px solid ${C.border}`, borderRadius: 8, padding: "8px 12px" }} className="flex justify-between items-center gap-2">
-              <span style={{ fontSize: 18 }}>{p.emoji}</span>
-              <span style={{ color: C.chalk, fontSize: 14, flex: 1 }}>{p.name}</span>
-              <input
-                type="number" step="0.05" defaultValue={p.price}
-                onBlur={(e) => {
-                  const val = parseFloat(e.target.value);
-                  if (!isNaN(val)) setConfig((c) => ({ ...c, products: (c?.products || []).map((x) => x.id === p.id ? { ...x, price: val } : x) }));
-                }}
-                style={{ width: 70, background: C.surface, border: `1px solid ${C.border}`, borderRadius: 6, padding: "5px 7px", color: C.amber, fontSize: 13 }}
-              />
-              <button onClick={() => setConfig((c) => ({ ...c, products: (c?.products || []).filter((x) => x.id !== p.id) }))}
-                style={{ background: "none", border: "none", cursor: "pointer" }}>
-                <TrashIcon size={15} color={C.red} />
-              </button>
-            </div>
-          ))}
-          {products.length === 0 && <Empty text="Aucun produit pour le moment." />}
-        </div>
-        <div style={{ color: C.chalkDim, fontSize: 11.5 }}>
-          Modifier le prix ne change que les futures consommations : l'historique garde le prix payé au moment de chaque conso.
-        </div>
-      </div>
-    );
-  }
-
-  function AdminSettings() {
-    const [newPin, setNewPin] = useState(config?.adminPin || "1234");
-    const [confirmReset, setConfirmReset] = useState(false);
-    return (
-      <div className="flex flex-col gap-6">
-        <div className="flex flex-col gap-2">
-          <div style={{ color: C.chalk, fontWeight: 700, fontSize: 14 }}>Code PIN administrateur</div>
-          <div className="flex gap-2">
-            <Field label="" value={newPin} onChange={(e) => setNewPin(e.target.value)} />
-            <Btn onClick={() => setConfig((c) => ({ ...c, adminPin: newPin }))}><PenLineIcon size={14} /> Enregistrer</Btn>
-          </div>
-        </div>
-
-        <div className="flex flex-col gap-2">
-          <div style={{ color: C.chalk, fontWeight: 700, fontSize: 14 }}>Devise</div>
-          <select
-            value={currency}
-            onChange={(e) => setConfig((c) => ({ ...c, currency: e.target.value }))}
-            style={{ background: C.surface2, border: `1px solid ${C.border}`, borderRadius: 8, padding: "8px 10px", color: C.chalk, fontSize: 14, width: 120 }}
-          >
-            <option value="CHF">CHF</option>
-            <option value="EUR">EUR</option>
-            <option value="USD">USD</option>
-          </select>
-        </div>
-
-        <div className="flex flex-col gap-2" style={{ borderTop: `1px dashed ${C.border}`, paddingTop: 14 }}>
-          <div style={{ color: C.red, fontWeight: 700, fontSize: 14 }}>Zone sensible</div>
-          {!confirmReset ? (
-            <Btn variant="danger" onClick={() => setConfirmReset(true)}><RotateCcwIcon size={14} /> Réinitialiser tout l'historique</Btn>
-          ) : (
-            <div className="flex gap-2 items-center">
-              <span style={{ color: C.chalkDim, fontSize: 13 }}>Confirmer la suppression définitive ?</span>
-              <Btn variant="danger" onClick={() => { setLog([]); setConfirmReset(false); }}>Oui, supprimer</Btn>
-              <Btn variant="ghost" onClick={() => setConfirmReset(false)}>Annuler</Btn>
-            </div>
-          )}
-        </div>
-      </div>
-    );
-  }
-
-  function Empty({ text }) {
-    return <div style={{ color: C.chalkDim, fontSize: 13, padding: "10px 0" }}>{text}</div>;
-  }
-
-  function Header({ subtitle }) {
-    return (
-      <div className="flex items-start justify-between">
-        <div>
-          <div className="flex items-center gap-2">
-            <CoffeeIcon size={20} color={C.amber} />
-            <span style={{ color: C.chalk, fontWeight: 800, fontSize: 19, fontFamily: "Georgia, serif" }}>
-              Café de la classe
-            </span>
-          </div>
-          <div style={{ color: C.chalkDim, fontSize: 13, marginTop: 2 }}>{subtitle}</div>
-        </div>
-        <button
-          onClick={() => setScreen("pin")}
-          title="Administration"
-          style={{ background: C.surface2, border: `1px solid ${C.border}`, borderRadius: 8, padding: 8, cursor: "pointer" }}
-        >
-          <LockIcon size={15} color={C.chalkDim} />
-        </button>
-      </div>
-    );
-  }
-
   return (
     <div style={{ background: C.bg, minHeight: "100vh", fontFamily: "system-ui, -apple-system, sans-serif" }}>
       <div style={{ maxWidth: 460, margin: "0 auto" }}>
-        {screen === "select" && <ScreenSelect />}
-        {screen === "tap" && member && <ScreenTap />}
-        {screen === "history" && member && <ScreenHistory />}
-        {screen === "pin" && <ScreenPin />}
-        {screen === "admin" && <ScreenAdmin />}
+        {screen === "select" && (
+          <ScreenSelect
+            members={members}
+            onSelectMember={(id) => { setMemberId(id); clearCart(); setScreen("tap"); }}
+            onAdminClick={() => setScreen("pin")}
+          />
+        )}
+        {screen === "tap" && member && (
+          <ScreenTap
+            member={member}
+            products={products}
+            currency={currency}
+            cart={cart}
+            cartLines={cartLines}
+            cartCount={cartCount}
+            cartTotal={cartTotal}
+            onAddToCart={addToCart}
+            onDecFromCart={decFromCart}
+            onRemoveFromCart={removeFromCart}
+            onValidateCart={validateCart}
+            onChangePerson={() => { setMemberId(null); clearCart(); setScreen("select"); }}
+            onShowHistory={() => setScreen("history")}
+          />
+        )}
+        {screen === "history" && member && (
+          <ScreenHistory member={member} myLog={myLog} currency={currency} onBack={() => setScreen("tap")} />
+        )}
+        {screen === "pin" && (
+          <ScreenPin
+            pin={pin}
+            setPin={setPin}
+            pinError={pinError}
+            setPinError={setPinError}
+            onBack={() => { setPin(""); setPinError(false); setScreen("select"); }}
+            onUnlock={unlockAdmin}
+          />
+        )}
+        {screen === "admin" && (
+          <ScreenAdmin
+            adminTab={adminTab}
+            setAdminTab={setAdminTab}
+            onExit={() => setScreen("select")}
+            logEntries={logEntries}
+            members={members}
+            products={products}
+            currency={currency}
+            adminPin={config?.adminPin}
+            setConfig={setConfig}
+            setLog={setLog}
+          />
+        )}
       </div>
       <Toast text={toast} />
     </div>
