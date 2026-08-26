@@ -83,8 +83,8 @@ const LOG_KEY = "cafe-consumptions-v1";
 
 const DEFAULT_CONFIG = {
   members: [
-    { id: "m1", name: "Alex" },
-    { id: "m2", name: "Sam" },
+    { id: "m1", name: "Alex", pin: "" },
+    { id: "m2", name: "Sam", pin: "" },
   ],
   products: [
     { id: "p1", name: "Café", price: 0.3, emoji: "☕" },
@@ -327,6 +327,58 @@ function ScreenSelect({ members, onSelectMember, onAdminClick }) {
             Aucun membre. Ajoutez-en depuis l'administration.
           </div>
         )}
+      </div>
+    </div>
+  );
+}
+
+function MemberPinScreen({ member, onBack, onUnlocked }) {
+  const [code, setCode] = useState("");
+  const [error, setError] = useState(false);
+
+  function tryUnlock(value) {
+    if (value === member.pin) {
+      onUnlocked();
+    } else {
+      setError(true);
+      setCode("");
+    }
+  }
+
+  return (
+    <div className="flex flex-col gap-5 p-5">
+      <button
+        onClick={onBack}
+        style={{ color: C.chalkDim, background: "none", border: "none", display: "flex", alignItems: "center", gap: 6, fontSize: 13, cursor: "pointer" }}
+      >
+        <ArrowLeftIcon size={16} /> Changer de personne
+      </button>
+      <div className="flex flex-col items-center gap-4" style={{ padding: "32px 0" }}>
+        <LockIcon size={28} color={C.amber} />
+        <div style={{ color: C.chalk, fontSize: 17, fontWeight: 800, fontFamily: "Georgia, serif" }}>
+          {member.name}
+        </div>
+        <div style={{ color: C.chalkDim, fontSize: 13 }}>Entrez votre code personnel</div>
+        <input
+          type="password"
+          inputMode="numeric"
+          autoFocus
+          value={code}
+          onChange={(e) => {
+            const v = e.target.value;
+            setCode(v);
+            setError(false);
+            if (v.length >= String(member.pin || "").length && v.length > 0) tryUnlock(v);
+          }}
+          onKeyDown={(e) => { if (e.key === "Enter") tryUnlock(code); }}
+          placeholder="••••"
+          style={{
+            background: C.surface2, border: `1px solid ${error ? C.red : C.border}`,
+            borderRadius: 8, padding: "10px 14px", color: C.chalk, fontSize: 18,
+            textAlign: "center", letterSpacing: 4, width: 160, outline: "none",
+          }}
+        />
+        {error && <div style={{ color: C.red, fontSize: 12 }}>Code incorrect</div>}
       </div>
     </div>
   );
@@ -666,14 +718,26 @@ function AdminMembers({ members, setConfig }) {
         <Field label="" placeholder="Nom du membre" value={name} onChange={(e) => setName(e.target.value)} />
         <Btn onClick={() => {
           if (!name.trim()) return;
-          setConfig((c) => ({ ...c, members: [...(c?.members || []), { id: uid(), name: name.trim() }] }));
+          setConfig((c) => ({ ...c, members: [...(c?.members || []), { id: uid(), name: name.trim(), pin: "" }] }));
           setName("");
         }}><PlusIcon size={14} /> Ajouter</Btn>
       </div>
       <div className="flex flex-col gap-2">
         {members.map((m) => (
-          <div key={m.id} style={{ background: C.surface2, border: `1px solid ${C.border}`, borderRadius: 8, padding: "8px 12px" }} className="flex justify-between items-center">
-            <span style={{ color: C.chalk, fontSize: 14 }}>{m.name}</span>
+          <div key={m.id} style={{ background: C.surface2, border: `1px solid ${C.border}`, borderRadius: 8, padding: "8px 12px" }} className="flex justify-between items-center gap-2">
+            <span style={{ color: C.chalk, fontSize: 14, flex: 1 }}>{m.name}</span>
+            <input
+              type="text"
+              inputMode="numeric"
+              defaultValue={m.pin || ""}
+              placeholder="Aucun code"
+              onBlur={(e) => {
+                const val = e.target.value.trim();
+                setConfig((c) => ({ ...c, members: (c?.members || []).map((x) => x.id === m.id ? { ...x, pin: val } : x) }));
+              }}
+              title="Code personnel optionnel — laisser vide pour aucun code"
+              style={{ width: 90, background: C.surface, border: `1px solid ${C.border}`, borderRadius: 6, padding: "5px 7px", color: C.amber, fontSize: 13, textAlign: "center" }}
+            />
             <button onClick={() => setConfig((c) => ({ ...c, members: (c?.members || []).filter((x) => x.id !== m.id) }))}
               style={{ background: "none", border: "none", cursor: "pointer" }}>
               <TrashIcon size={15} color={C.red} />
@@ -683,6 +747,8 @@ function AdminMembers({ members, setConfig }) {
         {members.length === 0 && <Empty text="Aucun membre pour le moment." />}
       </div>
       <div style={{ color: C.chalkDim, fontSize: 11.5 }}>
+        Le champ à droite de chaque membre est son code personnel optionnel, demandé quand il tape sur son
+        prénom. Laissez-le vide pour qu'il puisse continuer sans code.<br />
         Supprimer un membre ne supprime pas son historique de consommation déjà enregistré.
       </div>
     </div>
@@ -812,6 +878,7 @@ function App() {
 
   const [screen, setScreen] = useState("select");
   const [memberId, setMemberId] = useState(null);
+  const [pendingMemberId, setPendingMemberId] = useState(null);
   const [toast, setToast] = useState("");
   const [pin, setPin] = useState("");
   const [pinError, setPinError] = useState(false);
@@ -920,8 +987,28 @@ function App() {
         {screen === "select" && (
           <ScreenSelect
             members={members}
-            onSelectMember={(id) => { setMemberId(id); clearCart(); setScreen("tap"); }}
+            onSelectMember={(id) => {
+              const m = members.find((x) => x.id === id);
+              if (m && m.pin) {
+                setPendingMemberId(id);
+                setScreen("memberPin");
+              } else {
+                setMemberId(id); clearCart(); setScreen("tap");
+              }
+            }}
             onAdminClick={() => setScreen("pin")}
+          />
+        )}
+        {screen === "memberPin" && pendingMemberId && (
+          <MemberPinScreen
+            member={members.find((x) => x.id === pendingMemberId)}
+            onBack={() => { setPendingMemberId(null); setScreen("select"); }}
+            onUnlocked={() => {
+              setMemberId(pendingMemberId);
+              setPendingMemberId(null);
+              clearCart();
+              setScreen("tap");
+            }}
           />
         )}
         {screen === "tap" && member && (
